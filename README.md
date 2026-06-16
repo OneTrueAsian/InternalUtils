@@ -1,3 +1,6 @@
+# Util Scripts
+
+
 # VideoTranscribe
 
 A local video transcription tool powered by [OpenAI Whisper](https://github.com/openai/whisper). Drop in a video file, pick an output folder, and get a timestamped transcript — no internet required after setup.
