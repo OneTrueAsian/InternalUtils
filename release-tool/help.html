@@ -95,9 +95,9 @@
       <div class="table-scroll"><table>
         <thead><tr><th scope="col">Field</th><th scope="col">What to enter</th></tr></thead>
         <tbody>
-          <tr><td>Repository</td><td>The app's <code>owner/repo</code>, such as <code>OneTrueAsian/vault-spend</code>. Choose the app repo, not InternalUtils.</td></tr>
-          <tr><td>Remote branch</td><td>The pushed branch containing the code you want to release. Use <code>release-1.3.0</code> for that release branch, or <code>main</code> when main contains your intended release code. Blank uses the repository's default branch.</td></tr>
-          <tr><td>Release tag</td><td>A Git tag such as <code>v1.3.0</code>. A new tag points to the chosen branch's latest remote commit. Set the app's version in the source before releasing.</td></tr>
+          <tr><td>Repository</td><td>The app's <code>owner/repo</code>, such as <code>your-username/your-app</code>. Choose the app repo, not InternalUtils.</td></tr>
+          <tr><td>Remote branch</td><td>The pushed branch containing the code you want to release. Use <code>release-1.0.0</code> for that release branch, or <code>main</code> when main contains your intended release code. Blank uses the repository's default branch.</td></tr>
+          <tr><td>Release tag</td><td>A Git tag such as <code>v1.0.0</code>. A new tag points to the chosen branch's latest remote commit. Set the app's version in the source before releasing.</td></tr>
           <tr><td>GitHub API token</td><td>Your personal access token for the app repository, with the permissions above.</td></tr>
           <tr><td>Windows workflow</td><td>The filename only, such as <code>release-windows.yml</code>. Do not include <code>.github/workflows/</code>.</td></tr>
           <tr><td>macOS workflow</td><td>The filename only, such as <code>build-macos.yml</code>. Use a workflow that publishes a release; <code>build-macos-check.yml</code> only validates builds.</td></tr>
@@ -106,16 +106,16 @@
       </table></div>
     </section>
     <section id="example">
-      <h2>Example: release Vault Spend 1.3.0</h2>
+      <h2>Example: release your app 1.0.0</h2>
       <p>Assuming your app version, release code and both workflow files are committed and pushed:</p>
-      <pre><code>Repository:        OneTrueAsian/vault-spend
-Remote branch:     release-1.3.0
-Release tag:       v1.3.0
+      <pre><code>Repository:        your-username/your-app
+Remote branch:     release-1.0.0
+Release tag:       v1.0.0
 GitHub API token:  [your token]
 Windows workflow:  release-windows.yml
 macOS workflow:    build-macos.yml
 Tag input name:    tag</code></pre>
-      <p>Click <strong>Start release builds</strong>. The tool checks the branch and workflows, creates or verifies <code>v1.3.0</code>, then requests both builds against that tag.</p>
+      <p>Click <strong>Start release builds</strong>. The tool checks the branch and workflows, creates or verifies <code>v1.0.0</code>, then requests both builds against that tag.</p>
     </section>
     <section id="results">
       <h2>Understand results and retries</h2>
