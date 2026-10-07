@@ -4,6 +4,16 @@ A Windows desktop UI that uses `Start-GitHubRelease.ps1` to create a release tag
 and request **both Windows and macOS** GitHub Actions workflows. Builds run on
 GitHub, and your workflows publish the release assets.
 
+## Features
+
+- Light desktop layout with release details and workflow settings on separate tabs.
+- Live target summary and individual Windows/macOS dispatch status.
+- Inline validation errors, scrollable activity log, clickable run links and log copying.
+- Token visibility toggle that resets when starting, with no saved credentials.
+- Hover/focus help for every field and a bundled offline user guide.
+- Configurable repository, branch, tag, workflow filenames and shared tag input name.
+- Resume an existing tag at the same commit, without overwriting other tags.
+
 ## Launch
 
 Requires Windows, Python 3.10+ with Tkinter (included with the standard Windows
@@ -45,20 +55,19 @@ compile the target app itself. Each target workflow must:
   when the UI's **Tag input name** is blank.
 - Build the supplied tag and create/update the corresponding GitHub Release.
 
-For example, the existing Vault Spend macOS release workflow accepts `tag`.
-Its Windows release workflow created alongside this work still needs to be
-committed and pushed in Vault Spend before this tool can dispatch it.
-`build-macos-check.yml` is a validation workflow that does not publish releases;
-use `build-macos.yml` for release builds.
+For example, `release-windows.yml` and `build-macos.yml` can both accept a
+`tag` input. Choose workflows that publish release assets. A build-check workflow
+that only uploads test artifacts will not publish a release.
 
 GitHub's requirement for workflows on the default branch is documented in
 [Manually running a workflow](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
 
-Create a fine-grained personal access token restricted to the **target** repository
+Create a fine-grained personal access token with access to the **target** repository
 with **Contents: read/write** and **Actions: read/write**. GitHub may also require
 **Workflows: read/write** for reference creation involving workflow files; see
 [Git references API permissions](https://docs.github.com/en/rest/git/refs#create-a-reference).
-For a classic token, use `repo` (and `workflow` where required). Organization
+For multiple apps, you can select more repositories or all repositories owned by
+the token's selected resource owner. For a classic token, use `repo` (and `workflow` where required). Organization
 tokens may need additional owner approval or SSO authorization.
 
 ## Tag and retry behavior
@@ -74,8 +83,8 @@ Both workflows are checked before creating the tag. If one dispatch fails, the
 other is still attempted, and the tag remains available for retry.
 
 Before each dispatch, the tool checks for an existing queued/running/successful
-push or manual run for that exact tag and commit and reuses its link. This covers
-Vault Spend's macOS tag trigger. Detection is best effort: a concurrent run or a
+push or manual run for that exact tag and commit and reuses its link. Detection
+is best effort: a concurrent run or a
 delayed GitHub tag event can still create a duplicate. For deterministic manual
 orchestration, configure the target release workflows with `workflow_dispatch`
 only and avoid starting the same release from two clients simultaneously.
@@ -103,6 +112,7 @@ python -m unittest discover -s release-tool/tests -v
 
 These checks exercise the real PowerShell script through a fake GitHub transport,
 credential handling, tag conflicts/resumption, both dispatches, automatic macOS
-runs, partial failures, and Tkinter form state. They never contact GitHub or start
+runs, partial failures, inline validation, live summaries, token visibility,
+redacted log copying and Tkinter form state. They never contact GitHub or start
 a build. A real GitHub release run is required to validate the target repo's build
 environment and packaging workflow.

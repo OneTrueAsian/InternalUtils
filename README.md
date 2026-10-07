@@ -2,10 +2,54 @@
 
 ## GitHub Release Tool
 
-A Python desktop UI that uses PowerShell to tag a remote commit and start Windows and macOS GitHub build/release workflows. Enter your repository, API token and release tag, then follow the build links. No pip packages required.
+A Windows desktop utility for creating a GitHub release tag and starting both
+Windows and macOS build/release workflows. Configure the target app repository,
+remote branch, tag and workflow filenames to use it with different apps.
 
-Launch: `python .\release-tool\ReleaseTool.pyw`. See [setup, token permissions and usage](release-tool/README.md).
+### Features
 
+- Light desktop layout with separate **Release details** and **Workflow settings** tabs.
+- Live repository, branch and tag summary before starting a release.
+- Per-platform request status, readable errors, clickable build links and **Copy log**.
+- Masked API token with a **Show token** toggle; tokens are passed to PowerShell
+  through stdin and are not saved to disk or placed in command-line arguments.
+- An **i** help icon beside every field and an offline **Help & setup** guide.
+- Existing tag verification, retry support and checks for already-started workflows.
+
+### Launch
+
+Requires Windows, Python 3.10+ with Tkinter, and Windows PowerShell 5.1 or
+PowerShell 7. No pip packages are required for this tool.
+
+```powershell
+python .\release-tool\ReleaseTool.pyw
+```
+
+You can also double-click `release-tool/ReleaseTool.pyw`. Keep the tool's files
+together. Enter your release details, check the workflow settings, then click
+**Build release**. **View builds** opens GitHub Actions; **View release** opens
+the tag's release page.
+
+The app repository needs enabled Windows and macOS release workflows under
+`.github/workflows/`, present on both its default branch and the selected release
+branch. Both workflows must support manual dispatch. The utility starts those
+workflows; they control tests, packaging, signing and release publication.
+
+**Builds requested** confirms dispatch, not a successful build. Track the final
+results in GitHub Actions. Only code already pushed to GitHub is included.
+
+See [setup, token permissions, retries and CLI usage](release-tool/README.md),
+or open the bundled [user guide](release-tool/help.html) in a browser.
+
+### Offline verification
+
+```powershell
+python -m unittest discover -s release-tool/tests -v
+```
+
+The tests use fake GitHub responses and do not create tags or trigger builds.
+
+---
 
 # VideoTranscribe
 
