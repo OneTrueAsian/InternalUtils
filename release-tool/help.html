@@ -166,7 +166,9 @@ Tag input name:    tag</code></pre>
       <h3>The UI does not launch</h3>
       <p>Run <code>python .\release-tool\ReleaseTool.pyw</code> from a terminal to see startup errors. Check that Python includes Tkinter and that all tool files are together. PowerShell must also be available.</p>
     </section>
-  </main>
+  <section><h2>Retries and failure diagnostics</h2><p>Publishing workflows must use manual-only workflow_dispatch on both default and source branches. Remove tag push triggers to avoid duplicate publishing. Retrying a failed tag builds the same commit: commit code fixes, update versions and release notes, and select a new tag. Existing tags and assets are preserved. Monitoring tolerates 60 seconds of clock skew and excludes runs seen before dispatch. Failure diagnostics include redacted GitHub error details and short job-log excerpts when available. Actions read permission covers these checks.</p></section>
+</main>
   <footer>Open this guide using <strong>Help &amp; setup</strong> in the toolbar. This guide is bundled with the tool and can be read offline. GitHub links require an internet connection. <a href="#start">Back to get started</a></footer>
+
 </body>
 </html>

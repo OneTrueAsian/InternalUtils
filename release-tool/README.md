@@ -39,7 +39,8 @@ Click **Build release**; follow the clickable run links or use **View builds**
 and **View release**. A live target summary lets you check the repository, branch
 and tag before starting. After dispatch, the UI polls the exact Windows and macOS runs every 15 seconds
 until they complete. Success is reported only when both workflows succeed.
-Failures and cancellations show their run links and failed job/step names when available.
+Failures and cancellations show their run links, failed job/step names and
+short redacted error excerpts when available.
 **Stop monitoring** stops local polling while GitHub builds continue. **Copy log** copies the redacted activity log.
 
 Click **Help & setup** in the toolbar to open the bundled [user guide](help.html) in your
@@ -59,6 +60,7 @@ compile the target app itself. Each target workflow must:
 
 - Exist on GitHub's default branch and at the selected remote commit.
 - Be enabled, and declare `workflow_dispatch:` in block YAML format.
+- Use manual dispatch only for publishing; remove `push` triggers on both branches.
 - Accept an input named `tag` (or the input name you enter), or accept no inputs
   when the UI's **Tag input name** is blank.
 - Build the supplied tag and create/update the corresponding GitHub Release.
@@ -116,10 +118,8 @@ other is still attempted, and the tag remains available for retry.
 
 Before each dispatch, the tool checks for an existing queued/running/successful
 push or manual run for that exact tag and commit and reuses its link. Detection
-is best effort: a concurrent run or a
-delayed GitHub tag event can still create a duplicate. For deterministic manual
-orchestration, configure the target release workflows with `workflow_dispatch`
-only and avoid starting the same release from two clients simultaneously.
+requires manual-only publishing workflows to prevent delayed tag-push runs from
+racing the dispatch. Avoid starting the same release from two clients simultaneously.
 Failed/cancelled runs can be requested again by retrying with the same tag and
 original branch commit. Retrying a failed release may dispatch failed workflows again.
 
@@ -152,3 +152,7 @@ runs, partial failures, inline validation, live summaries, token visibility,
 redacted log copying and Tkinter form state. They never contact GitHub or start
 a build. A real GitHub release run is required to validate the target repo's build
 environment and packaging workflow.
+
+## Retries and failure diagnostics
+
+Publishing workflows must use manual-only workflow_dispatch on both default and source branches. Remove tag push triggers to avoid duplicate publishing. Retrying a failed tag builds the same commit: commit code fixes, update versions and release notes, and select a new tag. Existing tags and assets are preserved. Monitoring tolerates 60 seconds of clock skew and excludes runs seen before dispatch. Failure diagnostics include redacted GitHub error details and short job-log excerpts when available. Actions read permission covers these checks.

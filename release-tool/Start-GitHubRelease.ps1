@@ -48,17 +48,31 @@ function Invoke-GitHub {
         $status = 0
         if ($property -and $property.Value) { $status = [int]$property.Value.StatusCode }
         if ($status -eq 404 -and $AllowMissing) { return $null }
+        $detail = ''
+        if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+            try {
+                $apiError = $_.ErrorDetails.Message | ConvertFrom-Json
+                $detail = [string]$apiError.message
+                if ($apiError.PSObject.Properties['errors']) {
+                    $detail += ' ' + ($apiError.errors | ConvertTo-Json -Depth 5 -Compress)
+                }
+                $secret = $headers.Authorization.Substring(7)
+                $detail = $detail.Replace($secret, '[redacted]') -replace '[\r\n]', ' '
+                if ($detail.Length -gt 1000) { $detail = $detail.Substring(0, 1000) }
+                $detail = " GitHub: $detail"
+            } catch { $detail = '' }
+        }
         switch ($status) {
-            401 { throw 'GitHub rejected the token. Check its value and expiration.' }
-            403 { throw 'GitHub denied access. Check token permissions, organization authorization and rate limits.' }
+            401 { throw "GitHub rejected the token. Check its value and expiration.$detail" }
+            403 { throw "GitHub denied access. Check token permissions, organization authorization and rate limits.$detail" }
             404 {
                 if (-not $Path) {
-                    throw "GitHub cannot access repository $Repository (HTTP 404). Check the repository name, token resource owner and selected repositories. Private repositories also return 404 when the token lacks access."
+                    throw "GitHub cannot access repository $Repository (HTTP 404). Check the repository name, token resource owner and selected repositories. Private repositories also return 404 when the token lacks access.$detail"
                 }
-                throw "GitHub could not find $resource (HTTP 404). Check the branch or workflow and token access."
+                throw "GitHub could not find $resource (HTTP 404). Check the branch or workflow and token access.$detail"
             }
-            422 { throw "GitHub rejected $resource. Check the tag, workflow dispatch inputs and selected ref." }
-            default { throw "GitHub request failed (HTTP $status). Check connectivity or try again from the Actions page." }
+            422 { throw "GitHub rejected $resource. Check the tag, workflow dispatch inputs and selected ref.$detail" }
+            default { throw "GitHub request failed (HTTP $status). Check connectivity or try again from the Actions page.$detail" }
         }
     }
 }
@@ -139,6 +153,9 @@ try {
         if ($yamlText -notmatch '(?m)^\s*workflow_dispatch\s*:') {
             throw "Workflow $file must declare workflow_dispatch in block YAML format."
         }
+        if ($yamlText -match '(?m)^  push\s*:') {
+            throw "Workflow $file declares a push trigger. Use manual-only workflow_dispatch for release publishing to prevent duplicate builds. Update both the default and release branches, then use a new tag."
+        }
         $workflows += @{ file = $file; id = $metadata.id }
     }
     Send-Event 'log' "Target: $Repository / $Ref / $Tag / $sha"
@@ -146,16 +163,16 @@ try {
         Send-Event 'log' 'Using the existing tag at the same commit.'
     } else {
         $null = Invoke-GitHub 'git/refs' 'POST' @{ ref = "refs/tags/$Tag"; sha = $sha }
-        Send-Event 'log' 'Created release tag. Checking for workflows already triggered by the tag...'
-        Start-Sleep -Seconds 3
+        Send-Event 'log' 'Created release tag. Checking for existing workflow runs...'
     }
 
     function Send-Run {
         param($Workflow, $RunId, $Url, $RequestedAt)
         [Console]::WriteLine((@{ kind = 'run'; workflow = $Workflow; run_id = $RunId;
-            head_sha = $sha; tag = $Tag; url = $Url; requested_at = $RequestedAt } | ConvertTo-Json -Compress))
+            head_sha = $sha; tag = $Tag; url = $Url; requested_at = $RequestedAt; previous_run_ids = @($runs.workflow_runs | ForEach-Object { $_.id }) } | ConvertTo-Json -Compress))
     }
     $failed = 0
+    $tracked = 0
     foreach ($workflow in $workflows) {
         try {
             $runs = Invoke-GitHub "actions/workflows/$($workflow.id)/runs?head_sha=$sha&per_page=100"
@@ -166,8 +183,16 @@ try {
             })
             if ($matching.Count) {
                 Send-Event 'link' "$($workflow.file): already started or completed successfully" $matching[0].html_url
+                $tracked++
                 Send-Run $workflow.file $matching[0].id $matching[0].html_url ''
                 continue
+            }
+            $previousFailures = @($runs.workflow_runs | Where-Object {
+                $_.head_branch -eq $Tag -and $_.head_sha -eq $sha -and
+                $_.status -eq 'completed' -and $_.conclusion -ne 'success'
+            })
+            if ($previousFailures.Count) {
+                Send-Event 'log' "WARNING: $($workflow.file) previously failed for $Tag at $sha. Retrying builds the SAME commit; only temporary failures can be fixed by retrying. Commit code fixes and use a new version/tag."
             }
             $body = @{ ref = $Tag }
             if ($TagInput) { $body.inputs = @{ $TagInput = $Tag } }
@@ -178,13 +203,14 @@ try {
             Send-Event 'link' "$($workflow.file): build requested" $runUrl
             $runId = $null
             if ($result -and $result.PSObject.Properties['workflow_run_id']) { $runId = $result.workflow_run_id }
+            $tracked++
             Send-Run $workflow.file $runId $runUrl $requestedAt
         } catch {
             $failed++
             Send-Event 'error' "$($workflow.file): $($_.Exception.Message) Tag retained. Retry to start any missing workflow."
         }
     }
-    Send-Event 'link' 'Release page (assets appear after the workflows publish them)' "https://github.com/$Repository/releases/tag/$encodedTag"
+    if ($tracked -gt 0) { Send-Event 'link' 'Release page (assets appear after the workflows publish them)' "https://github.com/$Repository/releases/tag/$encodedTag" }
     if ($failed) { throw "$failed workflow request(s) failed. Other workflow requests may have succeeded." }
     Send-Event 'log' 'Workflow dispatch finished. Build completion is not yet confirmed.'
 } catch {

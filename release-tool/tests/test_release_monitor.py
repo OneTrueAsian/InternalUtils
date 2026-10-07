@@ -70,6 +70,27 @@ class MonitorTests(unittest.TestCase):
         self.assertIn('actions/runs/12', calls)
         self.assertNotIn('actions/runs/9', calls)
 
+    def test_clock_skew_does_not_reuse_known_runs(self):
+        events = queue.Queue()
+        t = dict(target(run_id=None), previous_run_ids=[12])
+        calls = []
+        def get(path):
+            calls.append(path)
+            if '/workflows/' in path:
+                return {'workflow_runs': [dict(id=i, head_sha='abc', head_branch='v1.0.0', event='workflow_dispatch', created_at='2026-10-07T09:59:40Z') for i in (12, 13)]}
+            return run()
+        self.assertTrue(release_monitor.monitor_runs('owner/repo', 'offline-token', [t], events, get=get, interval=0))
+        self.assertIn('actions/runs/13', calls)
+
+    def test_failed_job_excerpt_is_redacted(self):
+        events = queue.Queue()
+        def get(path):
+            return {'jobs': [dict(id=55, name='E2E', conclusion='failure', steps=[])]} if '/jobs?' in path else run(conclusion='failure')
+        self.assertFalse(release_monitor.monitor_runs('owner/repo', 'offline-token', [target()], events, get=get, interval=0, log_get=lambda _: 'Error: ENOENT offline-token'))
+        text = str(list(events.queue))
+        self.assertIn('ENOENT [redacted]', text)
+        self.assertNotIn('offline-token', text)
+
     def test_transient_status_errors_recover_but_persistent_errors_are_unknown(self):
         events = queue.Queue()
         calls = 0

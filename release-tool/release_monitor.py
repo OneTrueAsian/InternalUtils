@@ -1,12 +1,13 @@
 """Read-only GitHub workflow monitoring. No dispatch, rerun or cancellation calls."""
 from __future__ import annotations
-from datetime import datetime
+from datetime import datetime, timedelta
+import re
 import json
 import threading
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request, urlopen, build_opener, HTTPRedirectHandler
 
 
 def github_get(repository: str, path: str, token: str):
@@ -25,9 +26,36 @@ def github_get(repository: str, path: str, token: str):
         raise RuntimeError("Cannot read workflow status. Check network connectivity.") from None
 
 
-def monitor_runs(repository, token, runs, events, stop=None, get=None, interval=15, timeout=7200, clock=time.monotonic):
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def job_log_excerpt(repository, job_id, token):
+    # Authenticate only the GitHub API request, never its signed storage redirect.
+    request = Request(f"https://api.github.com/repos/{repository}/actions/jobs/{job_id}/logs",
+                      headers={"Authorization": f"Bearer {token}", "User-Agent": "InternalUtils-Release-Tool"})
+    try:
+        response = build_opener(NoRedirect).open(request, timeout=15)
+    except HTTPError as exc:
+        if exc.code != 302:
+            raise RuntimeError("Job logs are unavailable.") from None
+        location = exc.headers.get("Location", "")
+        if not location.startswith("https://"):
+            raise RuntimeError("Invalid job log redirect.")
+        response = urlopen(Request(location), timeout=15)
+    with response:
+        text = response.read(2_000_000).decode("utf-8", errors="replace")
+    text = text.replace(token, "[redacted]")
+    lines = [re.sub(r"\x1b\[[0-9;]*m", "", line)[:500] for line in text.splitlines()
+             if re.search(r"ENOENT|##\[error\]|Error:|FAILED|panic", line, re.I)]
+    return "\n".join(lines[:3])
+
+
+def monitor_runs(repository, token, runs, events, stop=None, get=None, interval=15, timeout=7200, clock=time.monotonic, log_get=None):
     stop = stop or threading.Event()
     get = get or (lambda path: github_get(repository, path, token))
+    log_get = log_get or (lambda job_id: job_log_excerpt(repository, job_id, token))
     targets = [dict(run, errors=0, finished=False, last=None, discovery_started=clock()) for run in runs]
     started = clock()
     overall = True
@@ -60,7 +88,8 @@ def monitor_runs(repository, token, runs, events, stop=None, get=None, interval=
                                   run["head_sha"] == target["head_sha"] and run["head_branch"] == target["tag"] and
                                   run["event"] == "workflow_dispatch" and
                                   datetime.fromisoformat(run["created_at"].replace("Z", "+00:00")) >=
-                                  datetime.fromisoformat(target["requested_at"].replace("Z", "+00:00"))]
+                                  (datetime.fromisoformat(target["requested_at"].replace("Z", "+00:00")) - timedelta(seconds=60)) and
+                                  run["id"] not in target.get("previous_run_ids", [])]
                     if not candidates:
                         if clock() - target["discovery_started"] >= 120:
                             raise RuntimeError("The dispatched run could not be identified. Check GitHub Actions; no final result is confirmed.")
@@ -94,6 +123,13 @@ def monitor_runs(repository, token, runs, events, stop=None, get=None, interval=
                                     steps = [step["name"] for step in job.get("steps", []) if step.get("conclusion") == "failure"]
                                     suffix = "; failed step: " + ", ".join(steps) if steps else ""
                                     events.put({"kind": "log", "message": f"Failed job: {job['name']}{suffix}"})
+                                    if job.get("id"):
+                                        try:
+                                            excerpt = log_get(job["id"])
+                                            if excerpt:
+                                                events.put({"kind": "log", "message": "Failure log excerpt: " + excerpt.replace(token, "[redacted]")})
+                                        except Exception:
+                                            events.put({"kind": "log", "message": "Failure log excerpt unavailable; open the run for full logs."})
                         except Exception:
                             events.put({"kind": "log", "message": "Job details could not be loaded. Open the workflow run for its logs."})
             except Exception as exc:

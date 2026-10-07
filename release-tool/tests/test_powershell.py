@@ -68,6 +68,28 @@ class PowerShellIntegrationTests(unittest.TestCase):
         self.assertIn('/11/dispatches', posts[0]['uri'])
         self.assertTrue(any('already started' in e.get('message', '') for e in events))
 
+    def test_failed_tag_warns_and_preserves_run_baseline(self):
+        result, events, posts = self.scenario('failed')
+        self.assertEqual(result.returncode, 0, events)
+        self.assertTrue(any('SAME commit' in e.get('message', '') for e in events))
+        self.assertTrue(all(10 in e['previous_run_ids'] for e in events if e['kind'] == 'run'))
+
+    def test_total_dispatch_failure_has_no_release_link(self):
+        result, events, posts = self.scenario('bothfail')
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse(any('/releases/tag/' in e.get('url', '') for e in events))
+
+    def test_api_error_details_are_redacted(self):
+        result, events, posts = self.scenario('error422')
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(any('Unexpected input [redacted]' in e.get('message', '') for e in events))
+
+    def test_push_trigger_is_rejected_before_mutation(self):
+        result, events, posts = self.scenario('push')
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(posts, [])
+        self.assertTrue(any('push trigger' in e.get('message', '') for e in events))
+
     def test_real_script_launch_from_directory_with_spaces_is_offline(self):
         import tempfile
         with tempfile.TemporaryDirectory(prefix='release tool launch ') as folder:

@@ -1,5 +1,5 @@
 # Offline integration fixture: no GitHub requests and no real credentials.
-param([ValidateSet('new', 'same', 'different', 'missing', 'partial', 'automatic', 'annotated', 'repository404')][string]$Scenario = 'new')
+param([ValidateSet('new', 'same', 'different', 'missing', 'partial', 'automatic', 'annotated', 'repository404', 'failed', 'bothfail', 'error422', 'push')][string]$Scenario = 'new')
 $global:releaseMockScenario = $Scenario
 $global:releaseMockCalls = [Collections.Generic.List[object]]::new()
 function Invoke-RestMethod {
@@ -36,14 +36,26 @@ function Invoke-RestMethod {
                 html_url = 'https://github.com/owner/repo/actions/runs/22'
             }) }
         }
+        if ($global:releaseMockScenario -eq 'failed') {
+            return [pscustomobject]@{ workflow_runs = @([pscustomobject]@{ id = 10; head_branch = 'v1.2.3'; head_sha = 'abc123'; event = 'workflow_dispatch'; status = 'completed'; conclusion = 'failure' }) }
+        }
         return [pscustomobject]@{ workflow_runs = @() }
     }
     if ($path.EndsWith('/dispatches')) {
+        if ($global:releaseMockScenario -eq 'bothfail') { throw 'Simulated network failure' }
+        if ($global:releaseMockScenario -eq 'error422') {
+            $ex = [Exception]::new('rejected')
+            $ex | Add-Member NoteProperty Response ([pscustomobject]@{ StatusCode = 422 })
+            $record = [Management.Automation.ErrorRecord]::new($ex, 'api', 'InvalidArgument', $null)
+            $record.ErrorDetails = [Management.Automation.ErrorDetails]::new('{"message":"Unexpected input offline-secret"}')
+            throw $record
+        }
         if ($global:releaseMockScenario -eq 'partial' -and $path.Contains('/22/')) { throw 'Simulated network failure' }
         return [pscustomobject]@{ workflow_run_id = $(if ($path.Contains('/22/')) { 200 } else { 100 }); html_url = 'https://github.com/owner/repo/actions/runs/100' }
     }
     if ($path.Contains('/contents/')) {
         $text = if ($global:releaseMockScenario -eq 'missing' -and $path.Contains('build-macos')) { "on:`n  push:" } else { "on:`n  workflow_dispatch:`n    inputs:`n      tag:" }
+        if ($global:releaseMockScenario -eq 'push') { $text += "`n  push:`n    tags:`n      - v*" }
         return [pscustomobject]@{ content = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($text)) }
     }
     if ($path.Contains('/actions/workflows/')) {
