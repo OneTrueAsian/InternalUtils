@@ -85,8 +85,9 @@ def monitor_runs(repository, token, runs, events, stop=None, get=None, interval=
                     query = urlencode({"head_sha": target["head_sha"], "per_page": 100})
                     listing = get(f"actions/workflows/{quote(target['workflow'], safe='')}/runs?{query}")
                     candidates = [run for run in listing["workflow_runs"] if
-                                  run["head_sha"] == target["head_sha"] and run["head_branch"] == target["tag"] and
+                                  run["head_sha"] == target["head_sha"] and run["head_branch"] == target.get("run_ref", target["tag"]) and
                                   run["event"] == "workflow_dispatch" and
+                                  (not target.get("run_title") or run.get("display_title") == target["run_title"]) and
                                   datetime.fromisoformat(run["created_at"].replace("Z", "+00:00")) >=
                                   (datetime.fromisoformat(target["requested_at"].replace("Z", "+00:00")) - timedelta(seconds=60)) and
                                   run["id"] not in target.get("previous_run_ids", [])]
@@ -99,7 +100,7 @@ def monitor_runs(repository, token, runs, events, stop=None, get=None, interval=
                         continue
                     target["run_id"] = max(candidates, key=lambda run: run["id"])["id"]
                 result = get(f"actions/runs/{target['run_id']}")
-                if result["head_sha"] != target["head_sha"] or result["head_branch"] != target["tag"]:
+                if result["head_sha"] != target["head_sha"] or result["head_branch"] != target.get("run_ref", target["tag"]) or (target.get("run_title") and result.get("display_title") != target["run_title"]):
                     raise RuntimeError("Run does not match the requested tag and commit. Final result is not confirmed.")
                 state, conclusion = result["status"], result.get("conclusion")
                 url = f"https://github.com/{repository}/actions/runs/{target['run_id']}"

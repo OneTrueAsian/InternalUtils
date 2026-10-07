@@ -1,5 +1,5 @@
 # Offline integration fixture: no GitHub requests and no real credentials.
-param([ValidateSet('new', 'same', 'different', 'missing', 'partial', 'automatic', 'annotated', 'repository404', 'failed', 'bothfail', 'error422', 'push')][string]$Scenario = 'new')
+param([ValidateSet('new', 'same', 'different', 'missing', 'partial', 'automatic', 'annotated', 'repository404', 'failed', 'bothfail', 'error422', 'push', 'recovery')][string]$Scenario = 'new')
 $global:releaseMockScenario = $Scenario
 $global:releaseMockCalls = [Collections.Generic.List[object]]::new()
 function Invoke-RestMethod {
@@ -16,6 +16,7 @@ function Invoke-RestMethod {
         return [pscustomobject]@{ default_branch = 'main' }
     }
     if ($path -eq '/repos/owner/repo/') { throw 'Repository URL must not have a trailing slash' }
+    if ($path.Contains('/branches/') -and $global:releaseMockScenario -eq 'recovery') { return [pscustomobject]@{ commit = @{ sha = 'def456' } } }
     if ($path.Contains('/branches/')) { return [pscustomobject]@{ commit = @{ sha = 'abc123' } } }
     if ($path.Contains('/git/ref/tags/')) {
         if ($global:releaseMockScenario -eq 'new') {
@@ -54,7 +55,7 @@ function Invoke-RestMethod {
         return [pscustomobject]@{ workflow_run_id = $(if ($path.Contains('/22/')) { 200 } else { 100 }); html_url = 'https://github.com/owner/repo/actions/runs/100' }
     }
     if ($path.Contains('/contents/')) {
-        $text = if ($global:releaseMockScenario -eq 'missing' -and $path.Contains('build-macos')) { "on:`n  push:" } else { "on:`n  workflow_dispatch:`n    inputs:`n      tag:" }
+        $text = if ($global:releaseMockScenario -eq 'missing' -and $path.Contains('build-macos')) { "on:`n  push:" } else { "run-name: Recover Windows `${{ inputs.tag }}`non:`n  workflow_dispatch:`n    inputs:`n      tag:`n      recovery:`n      source_sha:" }
         if ($global:releaseMockScenario -eq 'push') { $text += "`n  push:`n    tags:`n      - v*" }
         return [pscustomobject]@{ content = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($text)) }
     }

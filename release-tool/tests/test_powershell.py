@@ -10,11 +10,12 @@ import release_ui
 
 
 class PowerShellIntegrationTests(unittest.TestCase):
-    def scenario(self, name):
+    def scenario(self, name, **changes):
         command = release_ui.powershell_command()
         command[-2:] = [str(Path(__file__).with_name('mock_release.ps1')), '-Scenario', name]
         request = dict(repository='owner/repo', ref='main', tag='v1.2.3', token='offline-secret',
                        windows_workflow='release-windows.yml', mac_workflow='build-macos.yml', tag_input='tag')
+        request.update(changes)
         result = subprocess.run(command, input=json.dumps(request) + '\n', text=True,
                                 encoding='utf-8', capture_output=True, timeout=30,
                                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
@@ -24,6 +25,25 @@ class PowerShellIntegrationTests(unittest.TestCase):
         calls = next(e['calls'] for e in events if e['kind'] == 'test_calls')
         posts = [c for c in calls if c['method'] == 'POST']
         return result, events, posts
+
+    def test_recovery_dispatches_only_windows_from_branch_without_changing_tag(self):
+        result, events, posts = self.scenario('recovery', build_mode='windows_recovery', mac_workflow='')
+        self.assertEqual(result.returncode, 0, events)
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(json.loads(posts[0]['body']), {'ref': 'main', 'inputs': {'tag': 'v1.2.3', 'recovery': True, 'source_sha': 'abc123'}})
+        calls = next(e['calls'] for e in events if e['kind'] == 'test_calls')
+        self.assertFalse(any('build-macos' in c['uri'] for c in calls))
+        run = next(e for e in events if e['kind'] == 'run')
+        self.assertEqual(run['head_sha'], 'def456')
+        self.assertEqual(run['source_sha'], 'abc123')
+        self.assertEqual(run['run_ref'], 'main')
+        self.assertEqual(run['run_title'], 'Recover Windows v1.2.3')
+
+    def test_recovery_requires_existing_tag_and_tag_input(self):
+        for changes in ({}, {'tag_input': ''}):
+            result, events, posts = self.scenario('new', build_mode='windows_recovery', **changes)
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(posts, [])
 
     def test_new_tag_pins_both_workflows_to_same_commit(self):
         result, events, posts = self.scenario('new')

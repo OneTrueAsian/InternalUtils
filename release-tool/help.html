@@ -76,7 +76,7 @@
         <li><strong>Check token access and the tag.</strong> Confirm the token can read the target repository and dispatch both workflows. Use a new tag, or an existing tag pointing to the same commit. After adding prerequisites, an older tag may point to a commit that lacks them; choose a new release tag and matching app version for the updated commit. Rerunning an older tag does not include later changes. The tool never moves tags.</li>
       </ol>
       <p>These are changes to the <strong>app repository</strong>. Editing the tool's form cannot publish missing workflows, bump an app version or add release notes.</p>
-      <div class="note">The tool currently requires <strong>both Windows and macOS workflows</strong>. It does not install workflows, bump app versions, commit files or push local changes.</div>
+      <div class="note">Normal mode requires <strong>both Windows and macOS workflows</strong>; Windows-only recovery requires only the Windows workflow. It does not install workflows, bump app versions, commit files or push local changes.</div>
       <p style="margin-top:16px">Workflow setup reference: <a href="https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow">GitHub: manually running a workflow</a>.</p>
     </section>
     <section id="token">
@@ -167,6 +167,12 @@ Tag input name:    tag</code></pre>
       <p>Run <code>python .\release-tool\ReleaseTool.pyw</code> from a terminal to see startup errors. Check that Python includes Tkinter and that all tool files are together. PowerShell must also be available.</p>
     </section>
   <section><h2>Retries and failure diagnostics</h2><p>Publishing workflows must use manual-only workflow_dispatch on both default and source branches. Remove tag push triggers to avoid duplicate publishing. Retrying a failed tag builds the same commit: commit code fixes, update versions and release notes, and select a new tag. Existing tags and assets are preserved. Monitoring tolerates 60 seconds of clock skew and excludes runs seen before dispatch. Failure diagnostics include redacted GitHub error details and short job-log excerpts when available. Actions read permission covers these checks.</p></section>
+<section><h2>Windows-only recovery</h2><p>Choose <strong>Windows only · existing tag</strong> under Build. Enter <strong>main</strong> as Workflow branch and the existing version tag as Release tag. The Windows workflow runs from the branch but checks out the original tag. macOS is not requested, and the tag and existing macOS assets are preserved.</p><p>The workflow must accept tag, recovery and source_sha, verify the checked-out tag commit, and name its run <code>Recover Windows &lt;tag&gt;</code>. Vault Spend's updated release-windows.yml supports this. It repairs only legacy E2E driver paths and keeps all release test gates. Push the updated workflow before starting.</p><pre>Build:             Windows only · existing tag
+Repository:        owner/app-repo
+Workflow branch:   main
+Release tag:       v1.0.0
+Windows workflow:  release-windows.yml
+Tag input name:    tag</pre><p>Only the Windows run must succeed in recovery mode. Stop monitoring leaves GitHub builds running. This mode cannot add application code fixes to an existing tag.</p></section>
 </main>
   <footer>Open this guide using <strong>Help &amp; setup</strong> in the toolbar. This guide is bundled with the tool and can be read offline. GitHub links require an internet connection. <a href="#start">Back to get started</a></footer>
 

@@ -8,6 +8,7 @@ GitHub, and your workflows publish the release assets.
 
 - Light desktop layout with release details and workflow settings on separate tabs.
 - Live target summary and individual Windows/macOS build status through completion.
+- Windows-only recovery of existing tags using a separate workflow branch.
 - Inline validation errors, scrollable activity log, clickable run links and log copying.
 - Token visibility toggle that resets when starting, with no saved credentials.
 - Hover/click help for every field, with keyboard activation and a bundled offline user guide.
@@ -38,7 +39,8 @@ branch. The **Workflow settings** tab contains editable filenames, initially
 Click **Build release**; follow the clickable run links or use **View builds**
 and **View release**. A live target summary lets you check the repository, branch
 and tag before starting. After dispatch, the UI polls the exact Windows and macOS runs every 15 seconds
-until they complete. Success is reported only when both workflows succeed.
+until they complete. In normal mode, success requires both workflows; recovery
+mode requires only Windows.
 Failures and cancellations show their run links, failed job/step names and
 short redacted error excerpts when available.
 **Stop monitoring** stops local polling while GitHub builds continue. **Copy log** copies the redacted activity log.
@@ -106,7 +108,7 @@ tokens may need additional owner approval or SSO authorization.
 
 ## Tag and retry behavior
 
-The tool tags the current commit of the selected **remote** branch. It does not
+In normal mode, the tool tags the current commit of the selected **remote** branch. It does not
 commit, push, bump versions or include local changes. Set and commit the app's
 version before launching the release. Publication, draft/prerelease settings,
 signing and test gates remain controlled by the target workflows.
@@ -156,3 +158,40 @@ environment and packaging workflow.
 ## Retries and failure diagnostics
 
 Publishing workflows must use manual-only workflow_dispatch on both default and source branches. Remove tag push triggers to avoid duplicate publishing. Retrying a failed tag builds the same commit: commit code fixes, update versions and release notes, and select a new tag. Existing tags and assets are preserved. Monitoring tolerates 60 seconds of clock skew and excludes runs seen before dispatch. Failure diagnostics include redacted GitHub error details and short job-log excerpts when available. Actions read permission covers these checks.
+
+## Windows-only recovery for an existing release
+
+Select **Windows only · existing tag** in the Build selector. The branch field
+becomes **Workflow branch**: enter the branch containing the updated Windows
+workflow (usually `main`). The **Release tag** is the existing application tag,
+for example `v1.0.0`; it can point to a different commit from the workflow branch.
+macOS settings are disabled, macOS is not dispatched, and success requires only
+the selected Windows build. The tag is never created, moved or deleted in this mode.
+
+The Windows workflow must be registered on the default branch and exist on the
+workflow branch. It must accept the selected tag input plus boolean `recovery`
+and string `source_sha`. It must name recovery runs `Recover Windows <tag>` using
+`inputs.tag` so monitoring can distinguish releases dispatched on the same branch.
+The tool supplies the original tag SHA. The workflow must check out that tag,
+verify its commit equals `source_sha`, retain version and release gates, and
+publish only Windows installers to the corresponding existing release.
+
+Vault Spend's updated `release-windows.yml` supports this contract. It repairs
+only the hardcoded driver directory in an old E2E harness inside the runner;
+application sources stay at the original tag. All test gates still run. This
+mode cannot incorporate application bug fixes into an old release tag.
+
+```text
+Build:             Windows only · existing tag
+Repository:        owner/app-repo
+Workflow branch:   main
+Release tag:       v1.0.0
+Windows workflow:  release-windows.yml
+Tag input name:    tag
+```
+
+Publish the updated workflow to the workflow/default branch before using
+recovery. A workflow present only locally cannot be dispatched. Normal
+**Windows + macOS** mode retains the original branch/tag matching rules.
+
+CLI recovery: `powershell -NoProfile -ExecutionPolicy Bypass -File .\release-tool\Start-GitHubRelease.ps1 -Repository owner/app-repo -Ref main -Tag v1.0.0 -BuildMode windows_recovery`. The token is prompted securely.

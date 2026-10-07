@@ -34,6 +34,39 @@ class FakeProcess:
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_recovery_monitors_only_selected_windows_workflow(self):
+        process = FakeProcess('{"kind":"run","workflow":"release-windows.yml","run_id":11}\n')
+        settings = request(build_mode='windows_recovery')
+        settings['mac_workflow'] = ''
+        events = queue.Queue()
+        with patch.object(release_ui, 'powershell_command', return_value=['powershell']), patch.object(release_ui, 'monitor_runs', return_value=True) as monitor:
+            release_ui.run_release(settings, events, lambda *args, **kwargs: process)
+        self.assertTrue(list(events.queue)[-1]['success'])
+        self.assertEqual(len(monitor.call_args.args[2]), 1)
+        sent = json.loads(process.stdin.sent)
+        self.assertEqual(sent['build_mode'], 'windows_recovery')
+
+    def test_recovery_ui_keeps_macos_unrequested(self):
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            app = release_ui.ReleaseApp(root)
+            app.inputs['build_mode'].set(release_ui.BUILD_MODES[1])
+            self.assertEqual(app.branch_label.cget('text'), 'Workflow branch')
+            self.assertTrue(app.entry_by_key['mac_workflow'].instate(['disabled']))
+            app.inputs['repository'].set('owner/repo')
+            app.inputs['tag'].set('v1.2.3')
+            app.inputs['token'].set('offline-secret')
+            with patch.object(release_ui, 'powershell_command', return_value=['powershell']), patch.object(release_ui.threading, 'Thread'):
+                app.start()
+            self.assertIn('Not requested', app.platform_status['macOS'].get())
+            app.events.put({'kind': 'finished', 'success': True})
+            app.poll()
+            self.assertEqual(app.status.get(), 'Windows build completed successfully')
+            self.assertIn('Not requested', app.platform_status['macOS'].get())
+        finally:
+            root.destroy()
+
     def test_credentials_only_travel_over_stdin_and_logs_are_redacted(self):
         process = FakeProcess('{"kind":"log","message":"offline-secret"}\n{"kind":"run","workflow":"release-windows.yml","run_id":11}\n{"kind":"run","workflow":"build-macos.yml","run_id":22}\n')
         settings = request()

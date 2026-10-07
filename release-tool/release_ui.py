@@ -27,19 +27,27 @@ REMOTE_BRANCH_HELP = (
     "Both workflow files must exist on the selected branch and on the repository's default branch."
 )
 
+BUILD_MODES = ("Windows + macOS", "Windows only · existing tag")
+
+
+def recovery_mode(request: dict[str, str]) -> bool:
+    return request.get("build_mode", "both") in ("windows_recovery", BUILD_MODES[1])
+
+
 FIELD_HELP = {
+    "build_mode": "Windows + macOS creates or reuses a tag at the source branch commit. Windows only · existing tag preserves an existing tag and dispatches only Windows from the workflow branch. Recovery workflows must accept tag, recovery and source_sha inputs and name their run Recover Windows <tag>.",
     "repository": (
         "Enter the GitHub repository you want to build, in owner/repo format.\n\n"
         "Example: your-username/your-app. This is the app repository, "
         "not the InternalUtils repository hosting this tool."
     ),
-    "ref": REMOTE_BRANCH_HELP,
+    "ref": REMOTE_BRANCH_HELP + "\n\nIn Windows-only recovery this is the workflow branch (usually main), not the application source. The existing release tag supplies the application code.",
     "tag": (
-        "Enter the release tag to create, such as v1.0.0. "
+        "In normal mode, enter a release tag to create, such as v1.0.0. "
         "The tag will point to the selected remote branch's latest pushed commit.\n\n"
         "Commit and push any app version changes first; this tool does not update versions. "
         "An existing tag can be reused only when it points to the same commit. "
-        "Tags are never moved or overwritten."
+        "Tags are never moved or overwritten. In Windows-only recovery this tag must already exist; its original application code is built even when the workflow branch has newer commits."
     ),
     "token": (
         "Enter a GitHub personal access token with access to the target repository.\n\n"
@@ -66,7 +74,7 @@ FIELD_HELP = {
         "Enter the workflow_dispatch input name that receives the release tag. "
         "The default is tag. Both workflows must accept the same input name.\n\n"
         "Leave this blank if both workflows accept no inputs and build using the dispatched Git ref. "
-        "The workflow is always dispatched against the release tag."
+        "Normal builds dispatch against the release tag. Recovery dispatches against the workflow branch and requires a tag input."
     ),
 }
 
@@ -130,10 +138,14 @@ def validate_request(request: dict[str, str]) -> None:
             or re.search(r"[\s~^:?*\[\\\x00-\x20\x7f]", tag)
             or any(p.startswith(".") or p.endswith(".lock") for p in tag.split("/"))):
         raise ValueError("Enter a valid Git tag, such as v1.2.9.")
-    for key in ("windows_workflow", "mac_workflow"):
+    if request.get("build_mode", "both") not in ("both", "windows_recovery", *BUILD_MODES):
+        raise ValueError("Choose a supported build mode.")
+    if recovery_mode(request) and not request["tag_input"]:
+        raise ValueError("Windows recovery requires a tag input name.")
+    for key in (("windows_workflow",) if recovery_mode(request) else ("windows_workflow", "mac_workflow")):
         if not re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.-]*\.ya?ml", request[key]):
             raise ValueError("Use workflow filenames, such as release-windows.yml.")
-    if request["windows_workflow"] == request["mac_workflow"]:
+    if not recovery_mode(request) and request["windows_workflow"] == request["mac_workflow"]:
         raise ValueError("Choose different Windows and macOS workflows.")
     if request["tag_input"] and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", request["tag_input"]):
         raise ValueError("Enter a workflow input name, or leave it blank for workflows without inputs.")
@@ -169,6 +181,7 @@ def run_release(request: dict[str, str], events: queue.Queue, popen=subprocess.P
     process = None
     try:
         validate_request(request)
+        request["build_mode"] = "windows_recovery" if recovery_mode(request) else "both"
         process = popen(powershell_command(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -197,19 +210,19 @@ def run_release(request: dict[str, str], events: queue.Queue, popen=subprocess.P
         code = process.wait()
         if code and not error_seen:
             events.put({"kind": "error", "message": f"PowerShell exited with code {code}."})
-        expected = {request["windows_workflow"], request["mac_workflow"]}
+        expected = {request["windows_workflow"]} if recovery_mode(request) else {request["windows_workflow"], request["mac_workflow"]}
         runs = list({run["workflow"]: run for run in runs if run.get("workflow") in expected}.values())
-        identified_both = {run["workflow"] for run in runs} == expected
-        if code == 0 and not identified_both:
+        identified_selected = {run["workflow"] for run in runs} == expected
+        if code == 0 and not identified_selected:
             error_seen = True
-            events.put({"kind": "error", "message": "Both workflow runs were not identified. Overall build success cannot be confirmed."})
+            events.put({"kind": "error", "message": "All selected workflow runs were not identified. Overall build success cannot be confirmed."})
         class SafeMonitorEvents:
             def put(self, event):
                 events.put({key: value.replace(secret, "[redacted]") if isinstance(value, str) else value for key, value in event.items()})
         monitored = monitor_runs(request["repository"], secret, runs, SafeMonitorEvents(), stop=stop) if runs else False
         if code == 0 and not runs:
             events.put({"kind": "error", "message": "No workflow runs were identified. Build results are unknown; check GitHub Actions."})
-        events.put({"kind": "finished", "success": code == 0 and not error_seen and monitored and identified_both})
+        events.put({"kind": "finished", "success": code == 0 and not error_seen and monitored and identified_selected})
     except Exception as exc:
         # Error messages from process libraries must not expose credentials either.
         events.put({"kind": "error", "message": str(exc).replace(secret, "[redacted]")})
@@ -286,7 +299,16 @@ class ReleaseApp:
         details.columnconfigure(0, weight=1)
         settings.columnconfigure(0, weight=1)
         ttk.Label(details, text="Choose what to release", style="Heading.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(details, text="Use a branch already pushed to GitHub.", style="PaperHint.TLabel").grid(row=1, column=0, sticky="w", pady=(3, 12))
+        mode_row = ttk.Frame(details, style="Paper.TFrame")
+        mode_row.grid(row=1, column=0, sticky="ew", pady=(3, 12))
+        ttk.Label(mode_row, text="Build", style="Paper.TLabel").pack(side="left", padx=(0, 8))
+        self.inputs["build_mode"] = tk.StringVar(value=BUILD_MODES[0])
+        self.mode_control = ttk.Combobox(mode_row, textvariable=self.inputs["build_mode"], values=BUILD_MODES, state="readonly", width=30)
+        self.mode_control.pack(side="left")
+        button = ttk.Button(mode_row, text="i", width=2, style="Help.TButton")
+        button.pack(side="left", padx=6)
+        self.help_buttons["build_mode"] = button
+        self.help_tooltips["build_mode"] = HelpTooltip(button, FIELD_HELP["build_mode"])
         self.add_field(details, 2, "repository", "Repository", "", "owner/app-repo")
         branch_tag = ttk.Frame(details, style="Paper.TFrame")
         branch_tag.grid(row=3, column=0, sticky="ew", pady=(0, 8))
@@ -311,14 +333,17 @@ class ReleaseApp:
         self.add_field(settings, 2, "windows_workflow", "Windows workflow", "release-windows.yml", "Filename only")
         self.add_field(settings, 3, "mac_workflow", "macOS workflow", "build-macos.yml", "Choose the workflow that publishes a release")
         self.add_field(settings, 4, "tag_input", "Tag input name", "tag", "Leave blank if both workflows use the Git ref")
-        ttk.Label(settings, text="Both workflows need an enabled manual trigger.\nUse Help & setup for token permissions and setup instructions.", style="PaperHint.TLabel").grid(row=5, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(settings, text="Selected workflows need an enabled manual trigger.\nUse Help & setup for token permissions and setup instructions.", style="PaperHint.TLabel").grid(row=5, column=0, sticky="w", pady=(10, 0))
 
         preview = ttk.Frame(body, style="Paper.TFrame", padding=18)
         preview.grid(row=0, column=1, sticky="nsew")
         self.summary = {}
         ttk.Label(preview, text="Release target", style="Heading.TLabel").pack(anchor="w", pady=(0, 14))
         for key, label in [("repository", "REPOSITORY"), ("ref", "SOURCE BRANCH"), ("tag", "TAG")]:
-            ttk.Label(preview, text=label, style="PaperHint.TLabel").pack(anchor="w")
+            label_widget = ttk.Label(preview, text=label, style="PaperHint.TLabel")
+            label_widget.pack(anchor="w")
+            if key == "ref":
+                self.summary_branch_label = label_widget
             variable = tk.StringVar()
             self.summary[key] = variable
             ttk.Label(preview, textvariable=variable, style="Paper.TLabel", wraplength=210).pack(anchor="w", pady=(2, 12))
@@ -366,6 +391,7 @@ class ReleaseApp:
         self.append_log("Choose a repository, branch and tag, then enter your token.\nWorkflow filenames can be changed in Workflow settings.")
         for key in ("repository", "ref", "tag", "windows_workflow", "mac_workflow", "tag_input"):
             self.inputs[key].trace_add("write", self.update_summary)
+        self.inputs["build_mode"].trace_add("write", self.update_summary)
         self.update_summary()
         self.entry_by_key["repository"].focus_set()
         root.protocol("WM_DELETE_WINDOW", self.close)
@@ -379,7 +405,10 @@ class ReleaseApp:
         field.columnconfigure(0, weight=1)
         heading = ttk.Frame(field, style="Paper.TFrame")
         heading.grid(row=0, column=0, sticky="w", pady=(0, 5))
-        ttk.Label(heading, text=label, style="Paper.TLabel").pack(side="left")
+        label_widget = ttk.Label(heading, text=label, style="Paper.TLabel")
+        label_widget.pack(side="left")
+        if key == "ref":
+            self.branch_label = label_widget
         button = ttk.Button(heading, text="i", width=2, style="Help.TButton", takefocus=True)
         button.pack(side="left", padx=(6, 0))
         self.help_buttons[key] = button
@@ -398,6 +427,10 @@ class ReleaseApp:
     def update_summary(self, *_args):
         if self.running:
             return
+        recovery = recovery_mode({"build_mode": self.inputs["build_mode"].get()})
+        self.branch_label.configure(text="Workflow branch" if recovery else "Remote branch")
+        self.summary_branch_label.configure(text="WORKFLOW BRANCH" if recovery else "SOURCE BRANCH")
+        self.entry_by_key["mac_workflow"].configure(state="disabled" if recovery else "normal")
         for key, fallback in [("repository", "No repository selected"), ("ref", "Repository default branch"), ("tag", "No tag entered")]:
             self.summary[key].set(self.inputs[key].get().strip() or fallback)
         if hasattr(self, "target_repo"):
@@ -448,8 +481,10 @@ class ReleaseApp:
         self.log.delete("1.0", "end")
         self.log.configure(state="disabled")
         self.append_log(f"Release request: {self.target_repo} / {self.target_tag}")
+        self.recovery = recovery_mode(request)
         for platform, variable in self.platform_status.items():
-            variable.set(f"{platform}  ·  Waiting")
+            variable.set(f"{platform}  ·  Not requested" if self.recovery and platform == "macOS" else f"{platform}  ·  Waiting")
+        self.mode_control.configure(state="disabled")
         for entry in self.entries:
             entry.configure(state="disabled")
         self.token_toggle.configure(state="disabled")
@@ -510,7 +545,10 @@ class ReleaseApp:
                     self.token_toggle.configure(state="normal")
                     for entry in self.entries:
                         entry.configure(state="normal")
-                    self.status.set("Both builds completed successfully" if event["success"] else "Monitoring stopped · check GitHub" if self.stop_event.is_set() else "Release not successful · see activity")
+                    self.mode_control.configure(state="readonly")
+                    if getattr(self, "recovery", False):
+                        self.entry_by_key["mac_workflow"].configure(state="disabled")
+                    self.status.set(("Windows build completed successfully" if getattr(self, "recovery", False) else "Both builds completed successfully") if event["success"] else "Monitoring stopped · check GitHub" if self.stop_event.is_set() else "Release not successful · see activity")
                     self.status_label.configure(foreground="#326346" if event["success"] else "#a13226")
                     for platform, variable in self.platform_status.items():
                         if variable.get().endswith("Waiting"):

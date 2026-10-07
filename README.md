@@ -98,3 +98,5 @@ python -m unittest discover -s release-tool/tests -v
 
 These tests use fake GitHub responses and do not create tags or start remote
 builds. They do not validate VideoTranscribe or an app's GitHub build environment.
+
+The release tool also supports Windows-only recovery: run a compatible workflow from `main`, build an existing version tag, and add Windows installers to its release while preserving macOS assets. See [recovery setup](release-tool/README.md#windows-only-recovery-for-an-existing-release).

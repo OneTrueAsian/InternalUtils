@@ -19,6 +19,19 @@ def run(state='completed', conclusion='success', **changes):
 
 
 class MonitorTests(unittest.TestCase):
+    def test_recovery_identifies_branch_run_for_the_requested_tag(self):
+        events = queue.Queue()
+        t = dict(target(run_id=None), run_ref='main', run_title='Recover Windows v1.0.0')
+        calls = []
+        def get(path):
+            calls.append(path)
+            if '/workflows/' in path:
+                return {'workflow_runs': [dict(id=i, head_sha='abc', head_branch='main', event='workflow_dispatch', display_title=title, created_at='2026-10-07T10:00:01Z') for i, title in [(12, 'Recover Windows v2.0.0'), (13, t['run_title'])]]}
+            return dict(run(), head_branch='main', display_title=t['run_title'])
+        self.assertTrue(release_monitor.monitor_runs('owner/repo', 'offline-token', [t], events, get=get, interval=0))
+        self.assertIn('actions/runs/13', calls)
+        self.assertNotIn('actions/runs/12', calls)
+
     def test_tracks_running_then_both_successes(self):
         events = queue.Queue()
         reads = {11: 0, 22: 0}

@@ -15,6 +15,7 @@ param(
     [string]$WindowsWorkflow = 'release-windows.yml',
     [string]$MacWorkflow = 'build-macos.yml',
     [string]$TagInput = 'tag',
+    [ValidateSet("both", "windows_recovery")][string]$BuildMode = "both",
     [Security.SecureString]$Token
 )
 Set-StrictMode -Version Latest
@@ -97,6 +98,7 @@ try {
         $MacWorkflow = [string]$payload.mac_workflow
         $TagInput = [string]$payload.tag_input
         $Token = ConvertTo-SecureString ([string]$payload.token) -AsPlainText -Force
+        if ($payload.PSObject.Properties["build_mode"]) { $BuildMode = [string]$payload.build_mode }
         $payload = $null
     }
     if (-not $Token) { $Token = Read-Host 'GitHub token' -AsSecureString }
@@ -128,8 +130,11 @@ try {
         if ($part.StartsWith('.') -or $part.EndsWith('.lock')) { throw 'Invalid Git release tag component.' }
     }
     if ($TagInput -and $TagInput -notmatch '^[A-Za-z_][A-Za-z0-9_-]*$') { throw 'Invalid workflow input name.' }
-    $files = @($WindowsWorkflow.Trim(), $MacWorkflow.Trim())
-    if ($files[0] -eq $files[1]) { throw 'Windows and macOS workflows must be different files.' }
+    if ($BuildMode -notin @("both", "windows_recovery")) { throw "Invalid build mode." }
+    $recovery = $BuildMode -eq "windows_recovery"
+    if ($recovery -and -not $TagInput) { throw "Recovery requires a tag input name." }
+    $files = @(if ($recovery) { $WindowsWorkflow.Trim() } else { $WindowsWorkflow.Trim(); $MacWorkflow.Trim() })
+    if ($files.Count -eq 2 -and $files[0] -eq $files[1]) { throw 'Windows and macOS workflows must be different files.' }
     foreach ($file in $files) {
         if ($file -notmatch '^[A-Za-z0-9_-][A-Za-z0-9_.-]*\.ya?ml$') { throw 'Enter workflow filenames such as build-macos.yml.' }
     }
@@ -138,7 +143,16 @@ try {
     $sha = $branch.commit.sha
     $encodedTag = [Uri]::EscapeDataString($Tag)
     $existingTag = Invoke-GitHub "git/ref/tags/$encodedTag" -AllowMissing
-    if ($existingTag -and (Get-CommitForTag $existingTag.object) -ne $sha) {
+    $sourceSha = $sha
+    $runRef = $Tag
+    $runTitle = ''
+    if ($recovery) {
+        if (-not $existingTag) { throw 'Windows recovery requires an existing tag; no tag will be created.' }
+        $sourceSha = Get-CommitForTag $existingTag.object
+        $runRef = $Ref
+        $runTitle = "Recover Windows $Tag"
+    }
+    if (-not $recovery -and $existingTag -and (Get-CommitForTag $existingTag.object) -ne $sha) {
         throw 'This tag already points to a different commit. Select its original branch/commit or a new tag; tags are never moved.'
     }
 
@@ -156,10 +170,18 @@ try {
         if ($yamlText -match '(?m)^  push\s*:') {
             throw "Workflow $file declares a push trigger. Use manual-only workflow_dispatch for release publishing to prevent duplicate builds. Update both the default and release branches, then use a new tag."
         }
+        if ($recovery -and ($yamlText -notmatch '(?m)^\s+recovery\s*:' -or $yamlText -notmatch '(?m)^\s+source_sha\s*:')) {
+            throw "Workflow $file must support recovery and source_sha inputs on the workflow branch."
+        }
+        if ($recovery -and $yamlText -notmatch '(?m)^run-name:[^\r\n]*Recover Windows[^\r\n]*inputs\.tag') {
+            throw "Recovery workflow $file must name runs Recover Windows <tag> using inputs.tag."
+        }
         $workflows += @{ file = $file; id = $metadata.id }
     }
     Send-Event 'log' "Target: $Repository / $Ref / $Tag / $sha"
-    if ($existingTag) {
+    if ($recovery) {
+        Send-Event "log" "Windows-only recovery: workflow branch $Ref; existing tag $Tag at $sourceSha. macOS is not requested; the tag is preserved."
+    } elseif ($existingTag) {
         Send-Event 'log' 'Using the existing tag at the same commit.'
     } else {
         $null = Invoke-GitHub 'git/refs' 'POST' @{ ref = "refs/tags/$Tag"; sha = $sha }
@@ -169,7 +191,7 @@ try {
     function Send-Run {
         param($Workflow, $RunId, $Url, $RequestedAt)
         [Console]::WriteLine((@{ kind = 'run'; workflow = $Workflow; run_id = $RunId;
-            head_sha = $sha; tag = $Tag; url = $Url; requested_at = $RequestedAt; previous_run_ids = @($runs.workflow_runs | ForEach-Object { $_.id }) } | ConvertTo-Json -Compress))
+            head_sha = $sha; tag = $Tag; run_ref = $runRef; run_title = $runTitle; source_sha = $sourceSha; url = $Url; requested_at = $RequestedAt; previous_run_ids = @($runs.workflow_runs | ForEach-Object { $_.id }) } | ConvertTo-Json -Compress))
     }
     $failed = 0
     $tracked = 0
@@ -177,7 +199,8 @@ try {
         try {
             $runs = Invoke-GitHub "actions/workflows/$($workflow.id)/runs?head_sha=$sha&per_page=100"
             $matching = @($runs.workflow_runs | Where-Object {
-                $_.head_branch -eq $Tag -and $_.head_sha -eq $sha -and
+                $_.head_branch -eq $runRef -and $_.head_sha -eq $sha -and
+                (-not $recovery -or ($_.PSObject.Properties["display_title"] -and $_.display_title -eq $runTitle)) -and
                 $_.event -in @('push', 'workflow_dispatch') -and
                 ($_.status -ne 'completed' -or $_.conclusion -eq 'success')
             })
@@ -188,14 +211,16 @@ try {
                 continue
             }
             $previousFailures = @($runs.workflow_runs | Where-Object {
-                $_.head_branch -eq $Tag -and $_.head_sha -eq $sha -and
+                $_.head_branch -eq $runRef -and $_.head_sha -eq $sha -and
+                (-not $recovery -or ($_.PSObject.Properties["display_title"] -and $_.display_title -eq $runTitle)) -and
                 $_.status -eq 'completed' -and $_.conclusion -ne 'success'
             })
             if ($previousFailures.Count) {
-                Send-Event 'log' "WARNING: $($workflow.file) previously failed for $Tag at $sha. Retrying builds the SAME commit; only temporary failures can be fixed by retrying. Commit code fixes and use a new version/tag."
+                Send-Event 'log' "WARNING: $($workflow.file) previously failed for $Tag at $sha. Retrying builds the SAME commit; application code is unchanged. For code fixes use a new version/tag; Windows recovery can repair legacy test driver paths."
             }
-            $body = @{ ref = $Tag }
+            $body = @{ ref = $runRef }
             if ($TagInput) { $body.inputs = @{ $TagInput = $Tag } }
+            if ($recovery) { $body.inputs.recovery = $true; $body.inputs.source_sha = $sourceSha }
             $requestedAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
             $result = Invoke-GitHub "actions/workflows/$($workflow.id)/dispatches" 'POST' $body
             $runUrl = "https://github.com/$Repository/actions/workflows/$($workflow.file)"
