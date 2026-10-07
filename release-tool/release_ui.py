@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 import webbrowser
 
 SCRIPT = Path(__file__).with_name("Start-GitHubRelease.ps1")
+HELP_PAGE = Path(__file__).with_name("help.html")
 
 REMOTE_BRANCH_HELP = (
     "Choose the remote branch containing the code you want to release.\n\n"
@@ -263,6 +264,8 @@ class ReleaseApp:
         self.actions_button.pack(side="left")
         self.release_button = ttk.Button(actions, text="Open release", command=self.open_release, state="disabled")
         self.release_button.pack(side="left", padx=8)
+        self.help_button = ttk.Button(actions, text="Help", command=self.open_help)
+        self.help_button.pack(side="right")
         ttk.Label(frame, text="Only code already on GitHub is built. Publication follows your workflows' settings.", style="Hint.TLabel", wraplength=690).grid(row=15, column=0, columnspan=2, sticky="w", pady=(12, 0))
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.after(100, self.poll)
@@ -330,6 +333,12 @@ class ReleaseApp:
 
     def open_actions(self) -> None:
         webbrowser.open(f"https://github.com/{self.target_repo}/actions")
+
+    def open_help(self) -> None:
+        if not HELP_PAGE.is_file():
+            messagebox.showerror("Help page missing", "Keep help.html beside release_ui.py when copying the tool.", parent=self.root)
+            return
+        webbrowser.open(HELP_PAGE.resolve().as_uri())
 
     def open_release(self) -> None:
         from urllib.parse import quote

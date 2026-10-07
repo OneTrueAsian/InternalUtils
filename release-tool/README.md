@@ -22,6 +22,10 @@ The defaults point at `OneTrueAsian/vault-spend`, `release-windows.yml`, and
 filenames are editable. Click **Start release builds**; follow the clickable run
 links or the **Open GitHub Actions** and **Open release** buttons.
 
+Click **Help** in the UI to open the bundled [user guide](help.html) in your
+browser. It covers setup, token permissions, every form field, a release example,
+retries and troubleshooting. The guide also works offline.
+
 The UI clears the token field when starting. Credentials go to PowerShell via a
 private stdin pipe, never command-line arguments, saved preferences or files.
 The log redacts the supplied token. Credentials still exist briefly in process
