@@ -147,6 +147,8 @@ Tag input name:    tag</code></pre>
       <p>The branch may have advanced since the tag was created. Use a new tag for the new commit, or select a remote branch still pointing to the original tagged commit. You can rerun an existing failed build directly in GitHub Actions.</p>
       <h3>The request succeeded, but the build failed</h3>
       <p>Open the failed run in GitHub Actions and inspect its job logs. Build dependencies, test failures, signing secrets and packaging are controlled by the app's workflows.</p>
+      <h3>PowerShell says the release script does not exist</h3>
+      <p>Keep <code>Start-GitHubRelease.ps1</code>, <code>release_ui.py</code> and <code>ReleaseTool.pyw</code> together in the <code>release-tool</code> folder. Restore missing files from the repository, then close and reopen the utility. Check the exact path shown in the error; a shortcut or IDE may be launching a different copy. The launcher checks that the script exists and can be read before starting a release request.</p>
       <h3>The UI does not launch</h3>
       <p>Run <code>python .\release-tool\ReleaseTool.pyw</code> from a terminal to see startup errors. Check that Python includes Tkinter and that all tool files are together. PowerShell must also be available.</p>
     </section>

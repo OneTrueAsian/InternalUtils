@@ -20,6 +20,10 @@ Requires Windows, Python 3.10+ with Tkinter (included with the standard Windows
 Python installer), and Windows PowerShell 5.1 or PowerShell 7. No pip packages
 are needed.
 
+Keep `Start-GitHubRelease.ps1`, `release_ui.py`, `ReleaseTool.pyw` and `help.html`
+together. The launcher checks that the PowerShell script exists and can be read
+before starting. After updating the checkout, restart any open utility window.
+
 Double-click `ReleaseTool.pyw`, or run:
 
 ```powershell

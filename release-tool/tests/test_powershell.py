@@ -3,6 +3,7 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import release_ui
@@ -64,6 +65,35 @@ class PowerShellIntegrationTests(unittest.TestCase):
         self.assertEqual(len(posts), 1)
         self.assertIn('/11/dispatches', posts[0]['uri'])
         self.assertTrue(any('already started' in e.get('message', '') for e in events))
+
+    def test_real_script_launch_from_directory_with_spaces_is_offline(self):
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix='release tool launch ') as folder:
+            script = Path(folder) / 'Start-GitHubRelease.ps1'
+            script.write_bytes(release_ui.SCRIPT.read_bytes())
+            with patch.object(release_ui, 'SCRIPT', script):
+                command = release_ui.powershell_command()
+            self.assertEqual(command[-2], str(script.resolve()))
+            request = dict(repository='invalid', ref='', tag='', token='offline-secret',
+                           windows_workflow='release-windows.yml', mac_workflow='build-macos.yml', tag_input='tag')
+            result = subprocess.run(command, input=json.dumps(request) + '\n', text=True,
+                                    encoding='utf-8', capture_output=True, timeout=15,
+                                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            self.assertEqual(result.returncode, 1)
+            self.assertFalse(result.stderr, result.stderr)
+            events = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
+            self.assertEqual(events[0]['kind'], 'error')
+            self.assertEqual(events[0]['message'], 'Repository must use owner/repo format.')
+            self.assertNotIn('offline-secret', result.stdout)
+
+    def test_missing_companion_script_is_detected_before_launch(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            missing = Path(folder) / 'Start-GitHubRelease.ps1'
+            with patch.object(release_ui, 'SCRIPT', missing):
+                with self.assertRaisesRegex(RuntimeError, 'Release script is missing'):
+                    release_ui.powershell_command()
+
 
 
 if __name__ == '__main__':

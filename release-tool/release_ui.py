@@ -14,8 +14,8 @@ from tkinter import ttk, messagebox
 from urllib.parse import urlparse
 import webbrowser
 
-SCRIPT = Path(__file__).with_name("Start-GitHubRelease.ps1")
-HELP_PAGE = Path(__file__).with_name("help.html")
+SCRIPT = Path(__file__).resolve().with_name("Start-GitHubRelease.ps1")
+HELP_PAGE = Path(__file__).resolve().with_name("help.html")
 
 REMOTE_BRANCH_HELP = (
     "Choose the remote branch containing the code you want to release.\n\n"
@@ -139,12 +139,25 @@ def validate_request(request: dict[str, str]) -> None:
 
 
 def powershell_command() -> list[str]:
+    script = SCRIPT.resolve()
+    if not script.is_file():
+        raise RuntimeError(
+            f"Release script is missing: {script}\n"
+            "Restore Start-GitHubRelease.ps1 from the repository and keep it beside "
+            "release_ui.py and ReleaseTool.pyw. If you updated the checkout, close "
+            "and reopen the utility."
+        )
+    try:
+        with script.open("rb") as source:
+            source.read(1)
+    except OSError as exc:
+        raise RuntimeError(f"Cannot read the release script: {script}. Check file access permissions.") from exc
     # Prefer the system executable over Store aliases; never use a shell string.
     system = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
     executable = str(system) if system.is_file() else shutil.which("pwsh") or shutil.which("powershell")
     if not executable:
         raise RuntimeError("PowerShell is not installed. This tool requires Windows PowerShell 5.1 or PowerShell 7.")
-    return [executable, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(SCRIPT), "-InputJson"]
+    return [executable, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script), "-InputJson"]
 
 
 def run_release(request: dict[str, str], events: queue.Queue, popen=subprocess.Popen) -> None:
