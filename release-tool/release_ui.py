@@ -16,6 +16,63 @@ import webbrowser
 
 SCRIPT = Path(__file__).with_name("Start-GitHubRelease.ps1")
 
+REMOTE_BRANCH_HELP = (
+    "Choose the remote branch containing the code you want to release.\n\n"
+    "For example: branch release-1.3.0 with tag v1.3.0. "
+    "Use main only if its code is ready to release.\n\n"
+    "A blank branch uses the repository's default branch. "
+    "The tool tags the latest commit already pushed to GitHub; local changes are not included.\n\n"
+    "Both workflow files must exist on the selected branch and on the repository's default branch."
+)
+
+
+class HelpTooltip:
+    """Hover or focus the help button; Escape dismisses the instructions."""
+    def __init__(self, widget: ttk.Button, text: str):
+        self.widget = widget
+        self.text = text
+        self.window: tk.Toplevel | None = None
+        self.pending: str | None = None
+        widget.bind("<Enter>", self.schedule)
+        widget.bind("<Leave>", self.hide)
+        widget.bind("<FocusIn>", self.schedule)
+        widget.bind("<FocusOut>", self.hide)
+        widget.bind("<Escape>", self.hide)
+        widget.bind("<Destroy>", self.hide)
+        widget.configure(command=self.show)
+
+    def schedule(self, _event=None) -> None:
+        self.hide()
+        self.pending = self.widget.after(300, self.show)
+
+    def show(self) -> None:
+        if self.pending is not None:
+            self.widget.after_cancel(self.pending)
+            self.pending = None
+        if self.window is not None:
+            return
+        self.window = tk.Toplevel(self.widget)
+        self.window.overrideredirect(True)
+        self.window.attributes("-topmost", True)
+        tk.Label(self.window, text=self.text, wraplength=360, justify="left",
+                 bg="#1e293b", fg="#e2e8f0", font=("Segoe UI", 10),
+                 padx=14, pady=12, relief="solid", borderwidth=1).pack()
+        self.window.update_idletasks()
+        width, height = self.window.winfo_reqwidth(), self.window.winfo_reqheight()
+        x = min(self.widget.winfo_rootx(), self.widget.winfo_screenwidth() - width - 8)
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+        if y + height > self.widget.winfo_screenheight() - 8:
+            y = self.widget.winfo_rooty() - height - 6
+        self.window.geometry(f"+{max(0, x)}+{max(0, y)}")
+
+    def hide(self, _event=None) -> None:
+        if self.pending is not None:
+            self.widget.after_cancel(self.pending)
+            self.pending = None
+        if self.window is not None:
+            self.window.destroy()
+            self.window = None
+
 
 def validate_request(request: dict[str, str]) -> None:
     if not request["token"].strip():
@@ -114,6 +171,7 @@ class ReleaseApp:
         style.configure("TButton", background="#334155", foreground="#ffffff", padding=9, font=("Segoe UI", 10))
         style.map("TButton", background=[("active", "#475569"), ("disabled", "#1e293b")])
         style.configure("Start.TButton", background="#2563eb", font=("Segoe UI", 11, "bold"))
+        style.configure("Help.TButton", padding=1, font=("Segoe UI", 10, "bold"), foreground="#93c5fd")
         style.map("Start.TButton", background=[("active", "#1d4ed8"), ("disabled", "#334155")])
         frame = ttk.Frame(root, padding=26)
         frame.pack(fill="both", expand=True)
@@ -131,7 +189,13 @@ class ReleaseApp:
         ]
         self.entries = []
         for row, (key, label, default) in enumerate(fields, 2):
-            ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", padx=(0, 18), pady=6)
+            label_frame = ttk.Frame(frame)
+            label_frame.grid(row=row, column=0, sticky="w", padx=(0, 18), pady=6)
+            ttk.Label(label_frame, text=label).pack(side="left")
+            if key == "ref":
+                self.branch_help_button = ttk.Button(label_frame, text="i", width=2, style="Help.TButton", takefocus=True)
+                self.branch_help_button.pack(side="left", padx=(7, 0))
+                self.branch_help = HelpTooltip(self.branch_help_button, REMOTE_BRANCH_HELP)
             variable = tk.StringVar(value=default)
             self.inputs[key] = variable
             entry = ttk.Entry(frame, textvariable=variable, show="•" if key == "token" else "")
