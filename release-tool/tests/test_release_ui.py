@@ -35,10 +35,10 @@ class FakeProcess:
 
 class ReleaseTests(unittest.TestCase):
     def test_credentials_only_travel_over_stdin_and_logs_are_redacted(self):
-        process = FakeProcess('{"kind":"log","message":"offline-secret"}\n{"kind":"done","message":"requested"}\n')
+        process = FakeProcess('{"kind":"log","message":"offline-secret"}\n{"kind":"run","workflow":"release-windows.yml","run_id":11}\n{"kind":"run","workflow":"build-macos.yml","run_id":22}\n')
         settings = request()
         events = queue.Queue()
-        with patch.object(release_ui, "powershell_command", return_value=["powershell", "-InputJson"]):
+        with patch.object(release_ui, "powershell_command", return_value=["powershell", "-InputJson"]), patch.object(release_ui, "monitor_runs", return_value=True):
             captured = []
             def launch(command, **kwargs):
                 captured.append((command, kwargs))
@@ -96,7 +96,7 @@ class ReleaseTests(unittest.TestCase):
             app.poll()
             self.assertFalse(app.running)
             self.assertFalse(app.start_button.instate(["disabled"]))
-            self.assertIn("requested", app.status.get())
+            self.assertIn("completed", app.status.get())
         finally:
             root.destroy()
 
@@ -151,7 +151,7 @@ class ReleaseTests(unittest.TestCase):
             app.poll()
             self.assertEqual(app.platform_status["Windows"].get(), "Windows  ·  Build requested")
             self.assertEqual(app.platform_status["macOS"].get(), "macOS  ·  Request failed")
-            self.assertIn("failed", app.status.get())
+            self.assertIn("not successful", app.status.get())
             app.copy_log()
             self.assertIn("Tag retained", root.clipboard_get())
             self.assertNotIn("offline-secret", root.clipboard_get())
@@ -172,6 +172,34 @@ class ReleaseTests(unittest.TestCase):
             self.assertFalse(app.running)
             self.assertIn("Check release details", app.status.get())
             self.assertIn("Enter your GitHub API token", app.log.get("1.0", "end"))
+        finally:
+            root.destroy()
+
+
+    def test_monitoring_ui_reports_terminal_outcomes_and_stops_locally(self):
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            app = release_ui.ReleaseApp(root)
+            app.inputs["repository"].set("owner/repo")
+            app.inputs["tag"].set("v1.2.3")
+            app.inputs["token"].set("offline-secret")
+            with patch.object(release_ui, "powershell_command", return_value=["powershell"]), patch.object(release_ui.threading, "Thread"):
+                app.start()
+            app.events.put({"kind": "monitoring", "message": "Monitoring"})
+            app.events.put({"kind": "status", "workflow": "release-windows.yml", "state": "in_progress", "conclusion": None, "message": "Running"})
+            app.events.put({"kind": "status", "workflow": "build-macos.yml", "state": "completed", "conclusion": "failure", "message": "Failed"})
+            app.poll()
+            self.assertTrue(app.monitoring)
+            self.assertFalse(app.stop_button.instate(["disabled"]))
+            self.assertIn("Running", app.platform_status["Windows"].get())
+            self.assertIn("Failure", app.platform_status["macOS"].get())
+            app.stop_button.invoke()
+            self.assertTrue(app.stop_event.is_set())
+            app.events.put({"kind": "finished", "success": False})
+            app.poll()
+            self.assertIn("Monitoring stopped", app.status.get())
+            self.assertFalse(app.running)
         finally:
             root.destroy()
 

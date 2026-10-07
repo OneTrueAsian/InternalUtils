@@ -7,7 +7,7 @@ GitHub, and your workflows publish the release assets.
 ## Features
 
 - Light desktop layout with release details and workflow settings on separate tabs.
-- Live target summary and individual Windows/macOS dispatch status.
+- Live target summary and individual Windows/macOS build status through completion.
 - Inline validation errors, scrollable activity log, clickable run links and log copying.
 - Token visibility toggle that resets when starting, with no saved credentials.
 - Hover/focus help for every field and a bundled offline user guide.
@@ -20,7 +20,8 @@ Requires Windows, Python 3.10+ with Tkinter (included with the standard Windows
 Python installer), and Windows PowerShell 5.1 or PowerShell 7. No pip packages
 are needed.
 
-Keep `Start-GitHubRelease.ps1`, `release_ui.py`, `ReleaseTool.pyw` and `help.html`
+Keep `Start-GitHubRelease.ps1`, `release_ui.py`, `release_monitor.py`,
+`ReleaseTool.pyw` and `help.html`
 together. The launcher checks that the PowerShell script exists and can be read
 before starting. After updating the checkout, restart any open utility window.
 
@@ -36,14 +37,17 @@ branch. The **Workflow settings** tab contains editable filenames, initially
 `release-windows.yml` and `build-macos.yml`, and the tag input name.
 Click **Build release**; follow the clickable run links or use **View builds**
 and **View release**. A live target summary lets you check the repository, branch
-and tag before starting. Windows and macOS statuses describe dispatch requests,
-not the eventual build results. **Copy log** copies the redacted activity log.
+and tag before starting. After dispatch, the UI polls the exact Windows and macOS runs every 15 seconds
+until they complete. Success is reported only when both workflows succeed.
+Failures and cancellations show their run links and failed job/step names when available.
+**Stop monitoring** stops local polling while GitHub builds continue. **Copy log** copies the redacted activity log.
 
 Click **Help & setup** in the toolbar to open the bundled [user guide](help.html) in your
 browser. It covers setup, token permissions, every form field, a release example,
 retries and troubleshooting. The guide also works offline.
 
-The UI clears the token field when starting. Credentials go to PowerShell via a
+The UI clears the token field when starting. A token copy remains in worker memory
+while checking build status and is released when monitoring ends or the app closes. Credentials go to PowerShell via a
 private stdin pipe, never command-line arguments, saved preferences or files.
 The log redacts the supplied token. Credentials still exist briefly in process
 memory; Python strings cannot guarantee secure erasure.
@@ -117,10 +121,14 @@ delayed GitHub tag event can still create a duplicate. For deterministic manual
 orchestration, configure the target release workflows with `workflow_dispatch`
 only and avoid starting the same release from two clients simultaneously.
 Failed/cancelled runs can be requested again by retrying with the same tag and
-original branch commit.
+original branch commit. Retrying a failed release may dispatch failed workflows again.
 
-“Builds requested” means dispatch succeeded, not that builds or publication
-finished. A release page may initially be absent. The UI never sends a token
+“Build requested” means dispatch succeeded. The desktop UI then checks completion;
+“Both builds completed successfully” requires both run conclusions to be `success`.
+Monitoring stops after two hours, or after three consecutive status-read failures
+for a run; those results are reported as unknown, not successful.
+The CLI dispatches workflows and prints structured run metadata; live monitoring
+is provided by the desktop UI. A release page may initially be absent. The UI never sends a token
 to build runners; the workflows use their own `GITHUB_TOKEN`/repository secrets.
 
 ## PowerShell CLI

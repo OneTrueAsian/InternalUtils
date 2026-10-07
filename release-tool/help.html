@@ -52,7 +52,7 @@
         <li>Click <strong>Build release</strong>. Follow the run links to check build progress.</li>
       </ol>
       <pre><code>python .\release-tool\ReleaseTool.pyw</code></pre>
-      <p>The release target panel updates as you enter your repository, branch and tag. It also shows request status for each platform. Use <strong>Show token</strong> to check your token when needed; it is hidden again and cleared when starting.</p>
+      <p>The release target panel updates as you enter your repository, branch and tag. It shows live workflow status for each platform, including queued, running and completed results. Use <strong>Show token</strong> to check your token when needed; it is hidden again and cleared when starting.</p>
       <p>Hover over an <strong>i</strong> icon beside a field for a quick explanation. You can also focus or click the icon. Press Escape to dismiss its instructions.</p>
     </section>
     <section id="setup">
@@ -131,14 +131,16 @@ Tag input name:    tag</code></pre>
     <section id="results">
       <h2>Understand results and retries</h2>
       <ul>
-        <li><strong>Builds requested</strong> means the workflow requests succeeded. It does not mean builds or publication finished.</li>
+        <li><strong>Build requested</strong> means dispatch succeeded. The tool then checks each exact run every 15 seconds. It reports overall success only after both workflows complete with a successful conclusion.</li>
         <li>Use the clickable build links or <strong>View builds</strong> to inspect build progress and failures.</li>
         <li><strong>View release</strong> opens the tag's release page. It may be absent until a workflow publishes it.</li>
-        <li>The UI log shows request failures and partial success. Use <strong>Copy log</strong> to copy the redacted activity log. Logs remain in the UI and are not automatically saved to disk.</li>
+        <li>The UI log shows request failures, workflow failures, cancellations and partial success. Failed job and step names are included when GitHub provides them. Use <strong>Copy log</strong> to copy the redacted activity log. Logs remain in the UI and are not automatically saved to disk.</li>
         <li>If one request fails, the other is still attempted. The tag is retained. Enter your token again to retry with the same tag and its original branch commit.</li>
         <li>An existing tag can be reused only at the same commit. The tool never moves or deletes tags.</li>
         <li>Existing queued, running or successful runs for the same tag and commit are reused when found. Failed or cancelled runs can be requested again.</li>
       </ul>
+      <p><strong>Stop monitoring</strong> stops local status checks without cancelling GitHub builds. Closing the window during monitoring also leaves builds running. The token field is cleared when starting, while a copy remains in worker memory for status checks until monitoring ends or the application closes.</p>
+      <p>Monitoring lasts up to two hours. Three consecutive status-read failures stop tracking that run and show its result as unknown. A missing or unreadable result is never counted as a successful build. Follow the run link if monitoring stops.</p>
       <div class="note">Automatic tag triggers are checked before dispatch, but delayed events or simultaneous clients can still create duplicates. For predictable manual orchestration, use <code>workflow_dispatch</code> only in your release workflows.</div>
     </section>
     <section id="troubleshooting">
@@ -157,7 +159,7 @@ Tag input name:    tag</code></pre>
       <p>The branch may have advanced since the tag was created. Use a new tag for the new commit, or select a remote branch still pointing to the original tagged commit. You can rerun an existing failed build directly in GitHub Actions.</p>
       <h3>The build reports a version mismatch or missing release notes</h3>
       <p>Use the release checklist above. Match the tag to the selected branch's app version, update all relevant manifests and lockfiles, and add the new release notes and release-candidate metadata. Commit and push those changes before tagging. Changing the tag text in this tool does not change the app's version.</p>
-      <h3>The request succeeded, but the build failed</h3>
+      <h3>The build failed, was cancelled or its status is unknown</h3>
       <p>Open the failed run in GitHub Actions and inspect its job logs. Build dependencies, test failures, signing secrets and packaging are controlled by the app's workflows.</p>
       <h3>PowerShell says the release script does not exist</h3>
       <p>Keep <code>Start-GitHubRelease.ps1</code>, <code>release_ui.py</code> and <code>ReleaseTool.pyw</code> together in the <code>release-tool</code> folder. Restore missing files from the repository, then close and reopen the utility. Check the exact path shown in the error; a shortcut or IDE may be launching a different copy. The launcher checks that the script exists and can be read before starting a release request.</p>

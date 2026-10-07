@@ -16,7 +16,7 @@ Use this tool to start releases for different GitHub applications from a desktop
 form. Enter the target repository, remote branch, release tag and API token;
 configure the Windows and macOS workflow filenames in **Workflow settings**.
 
-The UI includes a live target summary, per-platform request status, readable
+The UI includes a live target summary, per-platform build monitoring, readable
 errors, clickable run links, log copying, field help and an offline user guide.
 Tokens are masked and passed to PowerShell through stdin; they are not saved to
 disk or placed in command-line arguments.
@@ -33,8 +33,9 @@ python .\release-tool\ReleaseTool.pyw
 ```
 
 You can also double-click `ReleaseTool.pyw`. Keep the files in `release-tool`
-together. **Builds requested** confirms that requests were sent; follow GitHub
-Actions for the actual build and publication results. Only pushed code is built.
+together. The tool polls both workflow runs until completion and reports success only when
+both succeed. **Stop monitoring** leaves builds running on GitHub; their links
+remain available for logs and publication details. Only pushed code is built.
 
 See the [release tool README](release-tool/README.md) for token permissions,
 workflow setup, retries and CLI usage. The bundled [Help page](release-tool/help.html)
@@ -80,6 +81,7 @@ InternalUtils/
 └── release-tool/
     ├── ReleaseTool.pyw       # Release UI entry point
     ├── release_ui.py         # Desktop interface
+    ├── release_monitor.py    # Read-only workflow status checks
     ├── Start-GitHubRelease.ps1
     ├── README.md             # Release setup and usage
     ├── help.html             # Offline user guide

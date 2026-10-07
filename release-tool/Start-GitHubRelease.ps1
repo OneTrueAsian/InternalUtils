@@ -150,6 +150,11 @@ try {
         Start-Sleep -Seconds 3
     }
 
+    function Send-Run {
+        param($Workflow, $RunId, $Url, $RequestedAt)
+        [Console]::WriteLine((@{ kind = 'run'; workflow = $Workflow; run_id = $RunId;
+            head_sha = $sha; tag = $Tag; url = $Url; requested_at = $RequestedAt } | ConvertTo-Json -Compress))
+    }
     $failed = 0
     foreach ($workflow in $workflows) {
         try {
@@ -161,14 +166,19 @@ try {
             })
             if ($matching.Count) {
                 Send-Event 'link' "$($workflow.file): already started or completed successfully" $matching[0].html_url
+                Send-Run $workflow.file $matching[0].id $matching[0].html_url ''
                 continue
             }
             $body = @{ ref = $Tag }
             if ($TagInput) { $body.inputs = @{ $TagInput = $Tag } }
+            $requestedAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
             $result = Invoke-GitHub "actions/workflows/$($workflow.id)/dispatches" 'POST' $body
             $runUrl = "https://github.com/$Repository/actions/workflows/$($workflow.file)"
             if ($result -and $result.PSObject.Properties['html_url']) { $runUrl = $result.html_url }
             Send-Event 'link' "$($workflow.file): build requested" $runUrl
+            $runId = $null
+            if ($result -and $result.PSObject.Properties['workflow_run_id']) { $runId = $result.workflow_run_id }
+            Send-Run $workflow.file $runId $runUrl $requestedAt
         } catch {
             $failed++
             Send-Event 'error' "$($workflow.file): $($_.Exception.Message) Tag retained. Retry to start any missing workflow."
@@ -176,7 +186,7 @@ try {
     }
     Send-Event 'link' 'Release page (assets appear after the workflows publish them)' "https://github.com/$Repository/releases/tag/$encodedTag"
     if ($failed) { throw "$failed workflow request(s) failed. Other workflow requests may have succeeded." }
-    Send-Event 'done' 'Windows and macOS workflows requested. Follow the build links for results.'
+    Send-Event 'log' 'Workflow dispatch finished. Build completion is not yet confirmed.'
 } catch {
     Send-Event 'error' $_.Exception.Message
     $exitCode = 1

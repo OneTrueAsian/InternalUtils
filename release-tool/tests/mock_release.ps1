@@ -23,7 +23,7 @@ function Invoke-RestMethod {
             $ex | Add-Member NoteProperty Response ([pscustomobject]@{ StatusCode = 404 })
             throw $ex
         }
-        $type = if ($global:releaseMockScenario -eq 'annotated', 'repository404') { 'tag' } else { 'commit' }
+        $type = if ($global:releaseMockScenario -eq 'annotated') { 'tag' } else { 'commit' }
         $sha = if ($global:releaseMockScenario -eq 'different') { 'other-commit' } else { 'abc123' }
         return [pscustomobject]@{ object = [pscustomobject]@{ type = $type; sha = $sha } }
     }
@@ -32,7 +32,7 @@ function Invoke-RestMethod {
     if ($path.EndsWith('/runs')) {
         if ($global:releaseMockScenario -eq 'automatic' -and $path.Contains('/22/')) {
             return [pscustomobject]@{ workflow_runs = @([pscustomobject]@{
-                head_branch = 'v1.2.3'; head_sha = 'abc123'; event = 'push'; status = 'in_progress'; conclusion = $null
+                id = 22; head_branch = 'v1.2.3'; head_sha = 'abc123'; event = 'push'; status = 'in_progress'; conclusion = $null
                 html_url = 'https://github.com/owner/repo/actions/runs/22'
             }) }
         }
@@ -40,7 +40,7 @@ function Invoke-RestMethod {
     }
     if ($path.EndsWith('/dispatches')) {
         if ($global:releaseMockScenario -eq 'partial' -and $path.Contains('/22/')) { throw 'Simulated network failure' }
-        return [pscustomobject]@{ html_url = 'https://github.com/owner/repo/actions/runs/100' }
+        return [pscustomobject]@{ workflow_run_id = $(if ($path.Contains('/22/')) { 200 } else { 100 }); html_url = 'https://github.com/owner/repo/actions/runs/100' }
     }
     if ($path.Contains('/contents/')) {
         $text = if ($global:releaseMockScenario -eq 'missing' -and $path.Contains('build-macos')) { "on:`n  push:" } else { "on:`n  workflow_dispatch:`n    inputs:`n      tag:" }

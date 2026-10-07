@@ -13,6 +13,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from urllib.parse import urlparse
 import webbrowser
+from release_monitor import monitor_runs
 
 SCRIPT = Path(__file__).resolve().with_name("Start-GitHubRelease.ps1")
 HELP_PAGE = Path(__file__).resolve().with_name("help.html")
@@ -160,10 +161,11 @@ def powershell_command() -> list[str]:
     return [executable, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script), "-InputJson"]
 
 
-def run_release(request: dict[str, str], events: queue.Queue, popen=subprocess.Popen) -> None:
+def run_release(request: dict[str, str], events: queue.Queue, popen=subprocess.Popen, stop=None) -> None:
     """Worker thread: stdin carries credentials, stdout carries JSON events."""
     secret = request["token"]
     error_seen = False
+    runs = []
     process = None
     try:
         validate_request(request)
@@ -183,16 +185,31 @@ def run_release(request: dict[str, str], events: queue.Queue, popen=subprocess.P
                 continue
             try:
                 event = json.loads(safe_line)
-                if not isinstance(event, dict) or event.get("kind") not in ("log", "link", "error", "done"):
+                if not isinstance(event, dict) or event.get("kind") not in ("log", "link", "error", "done", "run"):
                     raise ValueError("Unexpected event")
             except (ValueError, TypeError):
                 event = {"kind": "log", "message": safe_line}
+            if event["kind"] == "run":
+                runs.append(event)
+                continue
             error_seen |= event["kind"] == "error"
             events.put(event)
         code = process.wait()
         if code and not error_seen:
             events.put({"kind": "error", "message": f"PowerShell exited with code {code}."})
-        events.put({"kind": "finished", "success": code == 0 and not error_seen})
+        expected = {request["windows_workflow"], request["mac_workflow"]}
+        runs = list({run["workflow"]: run for run in runs if run.get("workflow") in expected}.values())
+        identified_both = {run["workflow"] for run in runs} == expected
+        if code == 0 and not identified_both:
+            error_seen = True
+            events.put({"kind": "error", "message": "Both workflow runs were not identified. Overall build success cannot be confirmed."})
+        class SafeMonitorEvents:
+            def put(self, event):
+                events.put({key: value.replace(secret, "[redacted]") if isinstance(value, str) else value for key, value in event.items()})
+        monitored = monitor_runs(request["repository"], secret, runs, SafeMonitorEvents(), stop=stop) if runs else False
+        if code == 0 and not runs:
+            events.put({"kind": "error", "message": "No workflow runs were identified. Build results are unknown; check GitHub Actions."})
+        events.put({"kind": "finished", "success": code == 0 and not error_seen and monitored and identified_both})
     except Exception as exc:
         # Error messages from process libraries must not expose credentials either.
         events.put({"kind": "error", "message": str(exc).replace(secret, "[redacted]")})
@@ -212,6 +229,8 @@ class ReleaseApp:
         self.root = root
         self.events: queue.Queue = queue.Queue()
         self.running = False
+        self.monitoring = False
+        self.stop_event = threading.Event()
         self.inputs: dict[str, tk.StringVar] = {}
         self.links: list[str] = []
         self.entries = []
@@ -310,7 +329,7 @@ class ReleaseApp:
             variable = tk.StringVar(value=f"{platform}  ·  Not requested")
             self.platform_status[platform] = variable
             ttk.Label(preview, textvariable=variable, style="Paper.TLabel", wraplength=210).pack(anchor="w", pady=4)
-        ttk.Label(preview, text="Build results appear on GitHub.\nThis panel tracks dispatch requests.", style="PaperHint.TLabel").pack(anchor="w", pady=(12, 0))
+        ttk.Label(preview, text="Build results appear on GitHub.\nThis panel tracks live workflow status.", style="PaperHint.TLabel").pack(anchor="w", pady=(12, 0))
 
         action_row = ttk.Frame(body)
         action_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(16, 12))
@@ -320,6 +339,8 @@ class ReleaseApp:
         self.actions_button.pack(side="left", padx=(10, 8))
         self.release_button = ttk.Button(action_row, text="View release", command=self.open_release, state="disabled")
         self.release_button.pack(side="left")
+        self.stop_button = ttk.Button(action_row, text="Stop monitoring", command=self.stop_monitoring, state="disabled")
+        self.stop_button.pack(side="left", padx=(8, 0))
         self.status = tk.StringVar(value="Ready to prepare a release")
         self.status_label = ttk.Label(action_row, textvariable=self.status, style="Hint.TLabel", wraplength=220)
         self.status_label.pack(side="right")
@@ -417,6 +438,8 @@ class ReleaseApp:
         self.target_repo = request["repository"]
         self.target_tag = request["tag"]
         self.running = True
+        self.monitoring = False
+        self.stop_event.clear()
         self.inputs["token"].set("")
         self.show_token.set(False)
         self.toggle_token()
@@ -437,9 +460,21 @@ class ReleaseApp:
         self.progress.start(12)
         self.status.set("Checking repository and workflows…")
         self.status_label.configure(foreground="#62665f")
-        threading.Thread(target=run_release, args=(request, self.events), daemon=True).start()
+        threading.Thread(target=run_release, args=(request, self.events, subprocess.Popen, self.stop_event), daemon=True).start()
+
+    def stop_monitoring(self):
+        self.stop_event.set()
+        self.stop_button.configure(state="disabled")
+        self.status.set("Stopping local monitoring…")
 
     def update_platform(self, event):
+        if event["kind"] == "status":
+            labels = {"in_progress": "Running", "queued": "Queued", "waiting": "Waiting for approval", "pending": "Pending", "requested": "Requested", "unknown": "Status unknown"}
+            text = str(event.get("conclusion") or ("Awaiting result" if event["state"] == "completed" else labels.get(event["state"], event["state"].replace("_", " ")))).replace("_", " ").capitalize()
+            for key, platform in [("windows_workflow", "Windows"), ("mac_workflow", "macOS")]:
+                if self.inputs[key].get().strip() == event.get("workflow"):
+                    self.platform_status[platform].set(f"{platform}  ·  {text}")
+            return
         message = str(event.get("message", ""))
         for key, platform in [("windows_workflow", "Windows"), ("mac_workflow", "macOS")]:
             if not message.startswith(self.inputs[key].get().strip() + ":"):
@@ -458,8 +493,16 @@ class ReleaseApp:
         try:
             while True:
                 event = self.events.get_nowait()
-                if event["kind"] == "finished":
+                if event["kind"] == "monitoring":
+                    self.monitoring = True
+                    self.stop_button.configure(state="normal")
+                    self.status.set("Monitoring GitHub builds…")
+                    self.start_button.configure(text="Monitoring…")
+                    self.append_log(event["message"])
+                elif event["kind"] == "finished":
                     self.running = False
+                    self.monitoring = False
+                    self.stop_button.configure(state="disabled")
                     self.progress.stop()
                     self.progress.grid_remove()
                     self.progress["value"] = 0
@@ -467,7 +510,7 @@ class ReleaseApp:
                     self.token_toggle.configure(state="normal")
                     for entry in self.entries:
                         entry.configure(state="normal")
-                    self.status.set("Builds requested · view results on GitHub" if event["success"] else "Request failed · see activity below")
+                    self.status.set("Both builds completed successfully" if event["success"] else "Monitoring stopped · check GitHub" if self.stop_event.is_set() else "Release not successful · see activity")
                     self.status_label.configure(foreground="#326346" if event["success"] else "#a13226")
                     for platform, variable in self.platform_status.items():
                         if variable.get().endswith("Waiting"):
@@ -476,7 +519,7 @@ class ReleaseApp:
                     self.update_platform(event)
                     self.append_log(str(event.get("message", "")), event["kind"])
                     url = event.get("url", "")
-                    if event["kind"] == "link" and urlparse(url).hostname == "github.com" and urlparse(url).scheme == "https":
+                    if event["kind"] in ("link", "status") and url not in self.links and urlparse(url).hostname == "github.com" and urlparse(url).scheme == "https":
                         tag = f"link{len(self.links)}"
                         self.links.append(url)
                         self.log.configure(state="normal")
@@ -503,6 +546,10 @@ class ReleaseApp:
         webbrowser.open(f"https://github.com/{self.target_repo}/releases/tag/{quote(self.target_tag, safe='')}")
 
     def close(self) -> None:
+        if self.running and self.monitoring:
+            self.stop_event.set()
+            self.root.destroy()
+            return
         if self.running:
             messagebox.showinfo("Release request in progress", "Wait for the requests to finish. Builds already started on GitHub continue independently.", parent=self.root)
             return
