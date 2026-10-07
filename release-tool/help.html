@@ -36,144 +36,37 @@
   <header>
     <div class="eyebrow">InternalUtils · User guide</div>
     <h1>GitHub Release Tool</h1>
-    <p class="intro">Create a release tag and start Windows and macOS build workflows from one form. Your GitHub workflows build the app and publish its release files.</p>
+    <p class="intro">Prepare and publish releases from one form. Build Windows locally, watch macOS on GitHub, and verify the final release.</p>
     <nav aria-label="Guide sections">
       <a href="#start">Get started</a><a href="#setup">Repository setup</a><a href="#prerequisites">Release checklist</a><a href="#token">API token</a><a href="#fields">Form fields</a><a href="#example">Example</a><a href="#results">Results &amp; retries</a><a href="#troubleshooting">Troubleshooting</a>
     </nav>
   </header>
   <main>
-    <section id="start">
-      <h2>Get started</h2>
-      <p>Use Windows with Python 3.10 or newer, Tkinter, and Windows PowerShell 5.1 or PowerShell 7. Tkinter comes with the standard Windows Python installer. No pip packages are required.</p>
-      <ol>
-        <li>Keep all files in the <code>release-tool</code> folder together.</li>
-        <li>Double-click <code>ReleaseTool.pyw</code>, or run the command below from the InternalUtils repository.</li>
-        <li>Enter the repository, branch, tag, and API token on the Release details tab. Check the two workflow filenames and tag input name on the Workflow settings tab.</li>
-        <li>Click <strong>Build release</strong>. Follow the run links to check build progress.</li>
-      </ol>
-      <pre><code>python .\release-tool\ReleaseTool.pyw</code></pre>
-      <p>The release target panel updates as you enter your repository, branch and tag. It shows live workflow status for each platform, including queued, running and completed results. Use <strong>Show token</strong> to check your token when needed; it is hidden again and cleared when starting.</p>
-      <p>Hover over an <strong>i</strong> icon beside a field for a quick explanation. You can also click the icon, or tab to it and press Space or Enter. Keyboard focus alone does not open its instructions. Press Escape to dismiss its instructions.</p>
-    </section>
-    <section id="setup">
-      <h2>Prepare the app repository</h2>
-      <p>The tool works with other apps by changing the repository and workflow filenames. Each app needs its own Windows and macOS release workflows.</p>
-      <ul>
-        <li>Store the workflow files in the <strong>app repository</strong>, under <code>.github/workflows/</code>. For example, <code>.github/workflows/release-windows.yml</code> and <code>.github/workflows/build-macos.yml</code>.</li>
-        <li>Commit and push both workflow files to the repository's default branch and to the branch you want to release.</li>
-        <li>Enable GitHub Actions and the two workflows. Each workflow must declare <code>workflow_dispatch:</code> in block YAML format.</li>
-        <li>Both workflows must accept the same tag input name, or both must accept no inputs and use the dispatched Git ref.</li>
-        <li>The workflows must build the tag and create or update its GitHub Release. Their settings control test gates, packaging, signing, draft releases and prereleases.</li>
-        <li>Commit and push the app's version changes and release code before using this tool.</li>
-      </ul>
-      <h3 id="prerequisites">Before every release</h3>
-      <ol>
-        <li><strong>Publish both workflow files.</strong> Verify the exact filenames on GitHub under <code>.github/workflows/</code>, on both the default branch (usually <code>main</code>) and your release branch. A local file alone is not enough. Use those exact filenames in Workflow settings; <code>build-macos.yml</code> and <code>macos-release.yml</code> are different names.</li>
-        <li><strong>Enable and register the workflows.</strong> Both must appear in GitHub Actions and support <code>workflow_dispatch</code>. A 404 for <code>actions/workflows/release-windows.yml</code> can mean the Windows workflow has not been published or the token cannot access it.</li>
-        <li><strong>Align the tag and app version.</strong> For a release tagged <code>v1.0.0</code>, set the app version to <code>1.0.0</code> when required by your workflow. For a Tauri app, keep <code>package.json</code>, <code>src-tauri/tauri.conf.json</code> and <code>src-tauri/Cargo.toml</code> aligned. Update the app entries in <code>package-lock.json</code> and <code>Cargo.lock</code> as applicable. A branch name does not change the app version.</li>
-        <li><strong>Complete the release metadata.</strong> Add the new version's release notes or “What's New” entry and update any release-candidate checks required by the app. Run the repository's required release tests before publishing.</li>
-        <li><strong>Commit and push the prepared release branch.</strong> Choose that branch in the tool, for example <code>release-1.0.0</code>, with tag <code>v1.0.0</code>. The default branch can retain its own version; select the branch with the intended release version.</li>
-        <li><strong>Check token access and the tag.</strong> Confirm the token can read the target repository and dispatch both workflows. Use a new tag, or an existing tag pointing to the same commit. After adding prerequisites, an older tag may point to a commit that lacks them; choose a new release tag and matching app version for the updated commit. Rerunning an older tag does not include later changes. The tool never moves tags.</li>
-      </ol>
-      <p>These are changes to the <strong>app repository</strong>. Editing the tool's form cannot publish missing workflows, bump an app version or add release notes.</p>
-      <div class="note">Normal mode requires <strong>both Windows and macOS workflows</strong>; Windows-only recovery requires only the Windows workflow. It does not install workflows, bump app versions, commit files or push local changes.</div>
-      <p style="margin-top:16px">Workflow setup reference: <a href="https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow">GitHub: manually running a workflow</a>.</p>
-    </section>
-    <section id="token">
-      <h2>Create your GitHub API token</h2>
-      <ol>
-        <li>Open GitHub <strong>Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token</strong>.</li>
-        <li>Select the resource owner that owns the app repository. Set an expiration.</li>
-        <li>Select the repositories you plan to release. <strong>All repositories</strong> supports other current and future repositories owned by the selected owner.</li>
-        <li>Under <strong>Repository permissions</strong>, choose <strong>Add permissions</strong> and add the permissions below. Clear any search text first, then search for each permission by name.</li>
-        <li>Generate the token and enter it in the tool's <strong>GitHub API token</strong> field.</li>
-      </ol>
-      <div class="table-scroll"><table>
-        <thead><tr><th scope="col">Permission</th><th scope="col">Access</th><th scope="col">Purpose</th></tr></thead>
-        <tbody>
-          <tr><td>Actions</td><td>Read and write</td><td>Check workflows and runs, then request builds.</td></tr>
-          <tr><td>Contents</td><td>Read and write</td><td>Read the remote branch and workflow files, and create the release tag.</td></tr>
-          <tr><td>Workflows</td><td>Read and write</td><td>GitHub may require this when creating references involving workflow files.</td></tr>
-          <tr><td>Metadata</td><td>Read-only</td><td>Included automatically.</td></tr>
-        </tbody>
-      </table></div>
-      <p style="margin-top:16px">A classic token uses <code>repo</code>, with <code>workflow</code> where required. Organization access may require owner approval or SSO authorization. A fine-grained token is scoped to its selected resource owner.</p>
-      <p>The field is masked and cleared when starting. The token travels to PowerShell over a private input pipe; it is not saved to disk or placed in command-line arguments. Logs redact the supplied token. It exists briefly in process memory.</p>
-      <p>Permission references: <a href="https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event">workflow dispatch</a> and <a href="https://docs.github.com/en/rest/git/refs#create-a-reference">Git reference creation</a>.</p>
-    </section>
-    <section id="fields">
-      <h2>Fill out the form</h2>
-      <div class="table-scroll"><table>
-        <thead><tr><th scope="col">Field</th><th scope="col">What to enter</th></tr></thead>
-        <tbody>
-          <tr><td>Repository</td><td>The app's <code>owner/repo</code>, such as <code>your-username/your-app</code>. Choose the app repo, not InternalUtils.</td></tr>
-          <tr><td>Remote branch</td><td>The pushed branch containing the code you want to release. Use <code>release-1.0.0</code> for that release branch, or <code>main</code> when main contains your intended release code. Blank uses the repository's default branch.</td></tr>
-          <tr><td>Release tag</td><td>A Git tag such as <code>v1.0.0</code>. A new tag points to the chosen branch's latest remote commit. Set the app's version in the source before releasing.</td></tr>
-          <tr><td>GitHub API token</td><td>Your personal access token for the app repository, with the permissions above.</td></tr>
-          <tr><td>Windows workflow</td><td>The filename only, such as <code>release-windows.yml</code>. Do not include <code>.github/workflows/</code>.</td></tr>
-          <tr><td>macOS workflow</td><td>The filename only, such as <code>build-macos.yml</code>. Use a workflow that publishes a release; <code>build-macos-check.yml</code> only validates builds.</td></tr>
-          <tr><td>Tag input name</td><td>Usually <code>tag</code>. It must match the input accepted by both workflows. Leave blank if both workflows accept no inputs and use the dispatched Git ref. The dispatched ref is always the release tag.</td></tr>
-        </tbody>
-      </table></div>
-    </section>
-    <section id="example">
-      <h2>Example: release your app 1.0.0</h2>
-      <p>Assuming your app version, release code and both workflow files are committed and pushed:</p>
-      <pre><code>Repository:        your-username/your-app
-Remote branch:     release-1.0.0
-Release tag:       v1.0.0
-GitHub API token:  [your token]
-Windows workflow:  release-windows.yml
-macOS workflow:    build-macos.yml
-Tag input name:    tag</code></pre>
-      <p>Click <strong>Build release</strong>. The tool checks the branch and workflows, creates or verifies <code>v1.0.0</code>, then requests both builds against that tag.</p>
-    </section>
-    <section id="results">
-      <h2>Understand results and retries</h2>
-      <ul>
-        <li><strong>Build requested</strong> means dispatch succeeded. The tool then checks each exact run every 15 seconds. It reports overall success only after both workflows complete with a successful conclusion.</li>
-        <li>Use the clickable build links or <strong>View builds</strong> to inspect build progress and failures.</li>
-        <li><strong>View release</strong> opens the tag's release page. It may be absent until a workflow publishes it.</li>
-        <li>The UI log shows request failures, workflow failures, cancellations and partial success. Failed job and step names are included when GitHub provides them. Use <strong>Copy log</strong> to copy the redacted activity log. Logs remain in the UI and are not automatically saved to disk.</li>
-        <li>If one request fails, the other is still attempted. The tag is retained. Enter your token again to retry with the same tag and its original branch commit.</li>
-        <li>An existing tag can be reused only at the same commit. The tool never moves or deletes tags.</li>
-        <li>Existing queued, running or successful runs for the same tag and commit are reused when found. Failed or cancelled runs can be requested again.</li>
-      </ul>
-      <p><strong>Stop monitoring</strong> stops local status checks without cancelling GitHub builds. Closing the window during monitoring also leaves builds running. The token field is cleared when starting, while a copy remains in worker memory for status checks until monitoring ends or the application closes.</p>
-      <p>Monitoring lasts up to two hours. Three consecutive status-read failures stop tracking that run and show its result as unknown. A missing or unreadable result is never counted as a successful build. Follow the run link if monitoring stops.</p>
-      <div class="note">Automatic tag triggers are checked before dispatch, but delayed events or simultaneous clients can still create duplicates. For predictable manual orchestration, use <code>workflow_dispatch</code> only in your release workflows.</div>
-    </section>
-    <section id="troubleshooting">
-      <h2>Troubleshooting</h2>
-      <h3>GitHub rejected the token / HTTP 401</h3>
-      <p>Check the token value and expiration. Generate a replacement if it expired, then enter it again.</p>
-      <h3>GitHub denied access / HTTP 403</h3>
-      <p>Check the token's repository permissions, selected owner and repository access. Organization approval, SSO authorization or a rate limit may also prevent requests.</p>
-      <h3>Repository, branch or workflow not found / HTTP 404</h3>
-      <p>Verify <code>owner/repo</code>, the remote branch name and workflow filenames. Push missing files to both branches. GitHub can also return 404 when the token lacks access to a private repo.</p>
-      <h3>Workflow is disabled or lacks manual dispatch</h3>
-      <p>Enable it in GitHub Actions and add a block-format <code>workflow_dispatch:</code> trigger. Make sure it exists on the default and selected branches.</p>
-      <h3>GitHub rejected a request / HTTP 422</h3>
-      <p>Check the Git tag and the workflows' input names. Both workflows must accept the tag input you selected. If the tag was created but dispatch failed, it remains available for retry.</p>
-      <h3>Tag points to a different commit</h3>
-      <p>The branch may have advanced since the tag was created. Use a new tag for the new commit, or select a remote branch still pointing to the original tagged commit. You can rerun an existing failed build directly in GitHub Actions.</p>
-      <h3>The build reports a version mismatch or missing release notes</h3>
-      <p>Use the release checklist above. Match the tag to the selected branch's app version, update all relevant manifests and lockfiles, and add the new release notes and release-candidate metadata. Commit and push those changes before tagging. Changing the tag text in this tool does not change the app's version.</p>
-      <h3>The build failed, was cancelled or its status is unknown</h3>
-      <p>Open the failed run in GitHub Actions and inspect its job logs. Build dependencies, test failures, signing secrets and packaging are controlled by the app's workflows.</p>
-      <h3>PowerShell says the release script does not exist</h3>
-      <p>Keep <code>Start-GitHubRelease.ps1</code>, <code>release_ui.py</code> and <code>ReleaseTool.pyw</code> together in the <code>release-tool</code> folder. Restore missing files from the repository, then close and reopen the utility. Check the exact path shown in the error; a shortcut or IDE may be launching a different copy. The launcher checks that the script exists and can be read before starting a release request.</p>
-      <h3>The UI does not launch</h3>
-      <p>Run <code>python .\release-tool\ReleaseTool.pyw</code> from a terminal to see startup errors. Check that Python includes Tkinter and that all tool files are together. PowerShell must also be available.</p>
-    </section>
-  <section><h2>Retries and failure diagnostics</h2><p>Publishing workflows must use manual-only workflow_dispatch on both default and source branches. Remove tag push triggers to avoid duplicate publishing. Retrying a failed tag builds the same commit: commit code fixes, update versions and release notes, and select a new tag. Existing tags and assets are preserved. Monitoring tolerates 60 seconds of clock skew and excludes runs seen before dispatch. Failure diagnostics include redacted GitHub error details and short job-log excerpts when available. Actions read permission covers these checks.</p></section>
-<section><h2>Windows-only recovery</h2><p>Choose <strong>Windows only · existing tag</strong> under Build. Enter <strong>main</strong> as Workflow branch and the existing version tag as Release tag. The Windows workflow runs from the branch but checks out the original tag. macOS is not requested, and the tag and existing macOS assets are preserved.</p><p>The workflow must accept tag, recovery and source_sha, verify the checked-out tag commit, and name its run <code>Recover Windows &lt;tag&gt;</code>. Vault Spend's updated release-windows.yml supports this. It repairs only legacy E2E driver paths and keeps all release test gates. Push the updated workflow before starting.</p><pre>Build:             Windows only · existing tag
+    <section id="start"><h2>Get started</h2><p>The default <strong>Local: full release</strong> mode builds Windows on your computer and uses GitHub Actions for macOS. Keep all tool files together and launch <code>ReleaseTool.pyw</code>. Python 3.10+, Tkinter and PowerShell are required.</p><ol><li>Enter the app repository, new tag and token under Release details.</li><li>Under <strong>Local release</strong>, choose the local app clone, JSON app profile and Markdown release notes.</li><li>Under Workflow settings, check the macOS release filename and tag input.</li><li>Click <strong>Build release</strong> to run the whole pipeline, including commits, merge/push and publication.</li></ol><p>Hover or activate each <strong>i</strong> icon for field instructions. Focus alone does not open help.</p></section>
+    <section id="setup"><h2>Local build prerequisites</h2><p>Install Git, GitHub CLI, Node/npm, Rust and Visual Studio C++ build tools. The app needs the Tauri CLI dependency and WebView2 runtime. For vendored OpenSSL, install Strawberry Perl and use short repository/target paths. The Vault Spend profile prefers Strawberry Perl, runs builds through PowerShell and preserves the local Cargo cache.</p><p>Use <code>profiles/tauri-vault-spend.json</code> for Vault Spend or customize <code>profiles/tauri-generic.json</code> for another Tauri app. Profiles contain command argument arrays, exact installer names and app-specific metadata settings. Review commands before running a profile. They do not contain tokens.</p><p>The macOS workflow must be registered on the default branch and support manual-only <code>workflow_dispatch</code> on the release source. Local Windows mode does not use the Windows workflow.</p></section>
+    <section id="prerequisites"><h2>Full release pipeline</h2><ol><li>Verify origin matches the selected repository, the tracked working tree is clean, the new tag is absent, and show changes since the previous release.</li><li>Bump the three version files, regenerate both locks, update the in-app notes and release metadata.</li><li>Run type check, lint, unit tests, Rust format/clippy checks and Rust tests. A failure is repeated once alone, then stops the release.</li><li>Commit <code>Release X.Y.Z</code>, merge into the default branch with a merge commit, and push. Incoming merge changes are checked again when they alter the tested tree.</li><li>Build Windows locally with <code>npx tauri build</code>. Require fresh, nonempty NSIS and MSI installers with the exact product/version filenames.</li><li>Create the stable release and tag at the recorded merge SHA, then start and watch macOS.</li><li>Verify four expected nonempty assets, stable publication, the tag commit and <code>releases/latest</code>.</li></ol><div class="note">No E2E commands are added by default, following your documented process. Configure an app's extra gates in its profile. Publication happens after Windows succeeds; if macOS fails, Windows assets remain available.</div></section>
+    <section id="token"><h2>Token and privacy</h2><p>A classic token needs <code>repo</code> and <code>workflow</code>. Fine-grained tokens need target-repository Contents and Actions read/write, plus Workflows permission where required. Local GitHub CLI and its scoped Git credential helper receive the token through their environment. Build commands do not receive it. GitHub-only dispatch uses stdin. No token is saved to disk or put in command arguments, and logs redact it.</p></section>
+    <section id="fields"><h2>Form fields</h2><table><thead><tr><th>Field</th><th>What to enter</th></tr></thead><tbody><tr><td>Build</td><td><strong>Local: full release</strong> for a new release; <strong>Local: Windows existing tag</strong> to add Windows installers to an existing release. GitHub-only alternatives retain their workflow gates.</td></tr><tr><td>Repository</td><td>The app's <code>owner/repo</code>; its local origin must match.</td></tr><tr><td>Release branch</td><td>Blank uses the profile's <code>release-X.Y.Z</code> pattern. It must differ from the default branch. Existing-tag local mode does not use this field.</td></tr><tr><td>Release tag</td><td>A stable tag such as <code>v1.0.1</code>. Full mode rejects existing tags; existing-tag mode preserves the original commit.</td></tr><tr><td>Application folder</td><td>The local application clone, not InternalUtils. Commit code changes before starting.</td></tr><tr><td>App profile</td><td>A JSON release recipe with check commands, versions/locks, metadata and exact asset patterns.</td></tr><tr><td>Release notes</td><td>A Markdown file outside the app repository. Bullets under What's new / Fixes and improvements become the in-app notes. Unsigned install notes are appended if missing. Not used for existing-tag mode.</td></tr><tr><td>macOS workflow / tag input</td><td>The publishing filename, usually <code>build-macos.yml</code>, and its tag input, usually <code>tag</code>. Windows workflow is unused locally.</td></tr></tbody></table></section>
+    <section id="example"><h2>Example: new local release</h2><pre>Build:             Local: full release
 Repository:        owner/app-repo
-Workflow branch:   main
-Release tag:       v1.0.0
-Windows workflow:  release-windows.yml
-Tag input name:    tag</pre><p>Only the Windows run must succeed in recovery mode. Stop monitoring leaves GitHub builds running. This mode cannot add application code fixes to an existing tag.</p></section>
-</main>
+Release branch:    release-1.0.1 (or blank)
+Release tag:       v1.0.1
+Application folder: E:\Apps\app-repo
+App profile:       profiles/tauri-generic.json
+Release notes:     E:\ReleaseNotes\app-1.0.1.md
+macOS workflow:    build-macos.yml
+Tag input name:    tag</pre><p>A release-notes file can start like this:</p><pre>My App 1.0.1 makes account setup easier.
+
+## What's new
+
+- **Account setup.** Clearer instructions help you create an account.
+
+## Fixes and improvements
+
+- Fixed the saved account name disappearing after a restart.</pre></section>
+    <section id="results"><h2>Existing-tag Windows and recovery</h2><p><strong>Local: Windows existing tag</strong> checks out the original tag temporarily, runs configured checks and builds/uploads Windows installers. It restores the original checkout and preserves macOS assets, release notes and the tag. An existing published stable release page is required. Different existing Windows assets are not overwritten unless <code>replace_windows_assets</code> is explicitly enabled in the profile.</p><p><strong>Stop after step</strong> waits for the current local command, then stops before the next. It does not undo pushed commits or published files. During macOS monitoring, polling stops but GitHub builds continue. Copy log captures the redacted activity output.</p><p>If macOS failed temporarily, open its run and rerun failed jobs, or use <code>gh run rerun RUN_ID --repo owner/app-repo --failed</code>. Do not rerun the full new-release pipeline against an existing tag. Use <a href="RELEASE-PROCESS.md">the documented recovery commands</a> for intentional asset deletion or release withdrawal; the tool never withdraws automatically.</p></section>
+    <section id="troubleshooting"><h2>Troubleshooting</h2><ul><li><strong>Tracked changes:</strong> fix or commit them on the release branch. Prepared versions can resume before tag creation when notes and candidate metadata agree.</li><li><strong>Check fails twice:</strong> stop and fix the cause; the tool never skips the gate.</li><li><strong>Perl / long path:</strong> install Strawberry Perl, configure its path and shorten the repository/target directory.</li><li><strong>Missing/stale installer:</strong> inspect the Windows build output. Exact fresh versioned filenames are required.</li><li><strong>Tag already exists:</strong> use local Windows existing-tag mode. Tags are not moved or deleted.</li><li><strong>403/404:</strong> verify token access, repository owner and workflow registration.</li><li><strong>Partial release:</strong> retain the successful assets and fix the failed platform; an incomplete release is not counted as success.</li><li><strong>Repository lock:</strong> if the owning process crashed, confirm it exited before removing <code>.git/internalutils-release.lock</code>.</li></ul><p>The original <strong>Windows + macOS</strong> and <strong>Windows only · existing tag</strong> options use GitHub workflows. They retain the workflow's desktop E2E gate and may take longer. Remote recovery uses a workflow branch and requires recovery/source_sha inputs and Recover Windows run naming.</p><p>See <a href="README.md">the detailed profile and CLI guide</a> and <a href="RELEASE-PROCESS.md">the source release process</a>.</p></section>
+  <section><h2>Other repositories and apps</h2><p>Choose a profile for the target checkout: tauri-generic.json for Tauri apps, custom-app.json for other build systems, or tauri-vault-spend.json for Vault Spend. Copy and edit the profile before use.</p><p>Custom profiles configure product name, default/release branches, JSON version properties, required tools, preparation/check/build commands, target directory and exact asset names. Commands are argument arrays; {version} and {tag} are substituted. List any generated release files in additional_release_files so they can be committed.</p><p>Set mac_assets to [] for Windows-only apps; macOS fields are ignored. Otherwise provide a manual macOS publishing workflow and its expected asset names. Asset counts are configurable. Stable vX.Y.Z tags are required. Your application must already have its own working build scripts and tests.</p><p>See the README section “Using another repository or application” for JSON examples and setup details. Use trusted profiles: their commands run locally and starting a release authorizes commits, pushes and publication.</p></section></main>
   <footer>Open this guide using <strong>Help &amp; setup</strong> in the toolbar. This guide is bundled with the tool and can be read offline. GitHub links require an internet connection. <a href="#start">Back to get started</a></footer>
 
 </body>

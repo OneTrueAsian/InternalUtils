@@ -10,10 +10,11 @@ import shutil
 import subprocess
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 from urllib.parse import urlparse
 import webbrowser
 from release_monitor import monitor_runs
+from local_release import load_profile, validate_local_request, run_local_release, ReleaseError
 
 SCRIPT = Path(__file__).resolve().with_name("Start-GitHubRelease.ps1")
 HELP_PAGE = Path(__file__).resolve().with_name("help.html")
@@ -27,7 +28,17 @@ REMOTE_BRANCH_HELP = (
     "Both workflow files must exist on the selected branch and on the repository's default branch."
 )
 
-BUILD_MODES = ("Windows + macOS", "Windows only · existing tag")
+BUILD_MODES = ("Windows + macOS", "Windows only · existing tag", "Local: full release", "Local: Windows existing tag")
+
+
+def local_mode(request):
+    return request.get("build_mode") in ("local_release", "local_windows", BUILD_MODES[2], BUILD_MODES[3])
+
+
+def normalize_local(request):
+    result = dict(request)
+    result["build_mode"] = "local_windows" if request.get("build_mode") in ("local_windows", BUILD_MODES[3]) else "local_release"
+    return result
 
 
 def recovery_mode(request: dict[str, str]) -> bool:
@@ -35,15 +46,18 @@ def recovery_mode(request: dict[str, str]) -> bool:
 
 
 FIELD_HELP = {
-    "build_mode": "Windows + macOS creates or reuses a tag at the source branch commit. Windows only · existing tag preserves an existing tag and dispatches only Windows from the workflow branch. Recovery workflows must accept tag, recovery and source_sha inputs and name their run Recover Windows <tag>.",
+    "local_repo": "Choose your local application Git repository, not InternalUtils. The full local release updates versions, runs checks, commits and merges, builds Windows here, and publishes. Use a short path for OpenSSL builds. Existing-tag mode checks out the original tag temporarily and restores your branch.",
+    "app_profile": "Choose a JSON app profile defining version files, release branches, checks and exact asset filenames. Start with tauri-vault-spend.json for Vault Spend, edit tauri-generic.json for another Tauri app, or custom-app.json for other build systems. No E2E commands are added implicitly. Extra checks and preparation hooks can be configured.",
+    "notes_file": "Choose a Markdown file describing what changed under What's new and Fixes and improvements. Its bullets become the in-app What's New entry. Install notes are appended for unsigned builds. Required for a new local release; existing-tag Windows builds preserve the existing release notes.",
+    "build_mode": "Local: full release follows RELEASE-PROCESS.md: versions, checks, commit/merge/push, local Windows build, publish, macOS and final verification. Local: Windows existing tag builds Windows without moving a tag or rerunning macOS. The original GitHub modes remain available and retain their workflow test gates.",
     "repository": (
         "Enter the GitHub repository you want to build, in owner/repo format.\n\n"
         "Example: your-username/your-app. This is the app repository, "
         "not the InternalUtils repository hosting this tool."
     ),
-    "ref": REMOTE_BRANCH_HELP + "\n\nIn Windows-only recovery this is the workflow branch (usually main), not the application source. The existing release tag supplies the application code.",
+    "ref": "In Local: full release this is the local release branch; blank uses release-X.Y.Z from the app profile. Local Windows existing-tag mode ignores this field.\n\n" + REMOTE_BRANCH_HELP + "\n\nIn Windows-only recovery this is the workflow branch (usually main), not the application source. The existing release tag supplies the application code.",
     "tag": (
-        "In normal mode, enter a release tag to create, such as v1.0.0. "
+        "Local full release prepares a new stable version from this tag, such as v1.0.1, and creates the tag at the merge SHA after Windows succeeds. Local Windows existing-tag mode requires an existing tag and preserves it.\n\nIn GitHub mode, enter a release tag to create, such as v1.0.0. "
         "The tag will point to the selected remote branch's latest pushed commit.\n\n"
         "Commit and push any app version changes first; this tool does not update versions. "
         "An existing tag can be reused only when it points to the same commit. "
@@ -61,7 +75,7 @@ FIELD_HELP = {
         "such as release-windows.yml, without the .github/workflows/ folder.\n\n"
         "It must exist in the target repository on both the default branch and the selected branch, "
         "be enabled, and support workflow_dispatch. "
-        "The workflow controls testing, installers and publication."
+        "The workflow controls testing, installers and publication. This field is unused in local modes."
     ),
     "mac_workflow": (
         "Enter the filename of your macOS build and release workflow, "
@@ -72,7 +86,7 @@ FIELD_HELP = {
     ),
     "tag_input": (
         "Enter the workflow_dispatch input name that receives the release tag. "
-        "The default is tag. Both workflows must accept the same input name.\n\n"
+        "The default is tag. Local full release uses this input only for macOS; local Windows existing-tag mode ignores it. Both GitHub workflows must accept the same input name.\n\n"
         "Leave this blank if both workflows accept no inputs and build using the dispatched Git ref. "
         "Normal builds dispatch against the release tag. Recovery dispatches against the workflow branch and requires a tag input."
     ),
@@ -128,6 +142,9 @@ class HelpTooltip:
 
 
 def validate_request(request: dict[str, str]) -> None:
+    if local_mode(request):
+        validate_local_request(normalize_local(request))
+        return
     if not request["token"].strip():
         raise ValueError("Enter your GitHub API token.")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", request["repository"]):
@@ -175,6 +192,10 @@ def powershell_command() -> list[str]:
 
 def run_release(request: dict[str, str], events: queue.Queue, popen=subprocess.Popen, stop=None) -> None:
     """Worker thread: stdin carries credentials, stdout carries JSON events."""
+    if local_mode(request):
+        request["build_mode"] = normalize_local(request)["build_mode"]
+        run_local_release(request, events, stop=stop)
+        return
     secret = request["token"]
     error_seen = False
     runs = []
@@ -296,13 +317,26 @@ class ReleaseApp:
         settings = ttk.Frame(self.tabs, style="Paper.TFrame", padding=20)
         self.tabs.add(details, text="Release details")
         self.tabs.add(settings, text="Workflow settings")
+        local_settings = ttk.Frame(self.tabs, style="Paper.TFrame", padding=20)
+        local_settings.columnconfigure(0, weight=1)
+        self.tabs.add(local_settings, text="Local release")
+        ttk.Label(local_settings, text="Build Windows on this computer", style="Heading.TLabel").grid(row=0, column=0, sticky="w")
+        self.add_field(local_settings, 1, "local_repo", "Application folder", "", "The local clone of the app")
+        self.add_field(local_settings, 2, "app_profile", "App profile", "profiles/tauri-generic.json", "JSON settings for the app's release process")
+        self.add_field(local_settings, 3, "notes_file", "Release notes", "", "Markdown notes for a new release")
+        self.browse_buttons = []
+        for row, key, title in [(1, "local_repo", "Choose application repository"), (2, "app_profile", "Choose app profile"), (3, "notes_file", "Choose release notes")]:
+            button = ttk.Button(local_settings, text="Browse…", command=lambda field=key, prompt=title: self.browse_local(field, prompt))
+            button.grid(row=row, column=1, sticky="e", padx=(10, 0))
+            self.browse_buttons.append(button)
+        ttk.Label(local_settings, text="Full release commits, merges, pushes and publishes.\nExisting-tag Windows mode preserves the tag and macOS assets.\nCheck the profile's commands before starting.", style="PaperHint.TLabel").grid(row=4, column=0, columnspan=2, sticky="w", pady=8)
         details.columnconfigure(0, weight=1)
         settings.columnconfigure(0, weight=1)
         ttk.Label(details, text="Choose what to release", style="Heading.TLabel").grid(row=0, column=0, sticky="w")
         mode_row = ttk.Frame(details, style="Paper.TFrame")
         mode_row.grid(row=1, column=0, sticky="ew", pady=(3, 12))
         ttk.Label(mode_row, text="Build", style="Paper.TLabel").pack(side="left", padx=(0, 8))
-        self.inputs["build_mode"] = tk.StringVar(value=BUILD_MODES[0])
+        self.inputs["build_mode"] = tk.StringVar(value=BUILD_MODES[2])
         self.mode_control = ttk.Combobox(mode_row, textvariable=self.inputs["build_mode"], values=BUILD_MODES, state="readonly", width=30)
         self.mode_control.pack(side="left")
         button = ttk.Button(mode_row, text="i", width=2, style="Help.TButton")
@@ -326,7 +360,7 @@ class ReleaseApp:
         self.show_token = tk.BooleanVar(value=False)
         self.token_toggle = ttk.Checkbutton(details, text="Show token", variable=self.show_token, command=self.toggle_token)
         self.token_toggle.grid(row=5, column=0, sticky="e", pady=(0, 6))
-        ttk.Label(details, text="Workflows and app versions must already be committed.", style="PaperHint.TLabel").grid(row=6, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(details, text="Commit app code changes before starting; review the selected mode.", style="PaperHint.TLabel").grid(row=6, column=0, sticky="w", pady=(8, 0))
 
         ttk.Label(settings, text="Connect your release workflows", style="Heading.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(settings, text="Files live in the app's .github/workflows folder.", style="PaperHint.TLabel").grid(row=1, column=0, sticky="w", pady=(3, 12))
@@ -387,9 +421,12 @@ class ReleaseApp:
         self.progress = ttk.Progressbar(body, mode="indeterminate")
         self.progress.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         self.progress.grid_remove()
-        ttk.Label(body, text="Only pushed code is built. Your workflows decide when the release is published.", style="Hint.TLabel").grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.footer = tk.StringVar()
+        ttk.Label(body, textvariable=self.footer, style="Hint.TLabel").grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 0))
         self.append_log("Choose a repository, branch and tag, then enter your token.\nWorkflow filenames can be changed in Workflow settings.")
         for key in ("repository", "ref", "tag", "windows_workflow", "mac_workflow", "tag_input"):
+            self.inputs[key].trace_add("write", self.update_summary)
+        for key in ("local_repo", "app_profile", "notes_file"):
             self.inputs[key].trace_add("write", self.update_summary)
         self.inputs["build_mode"].trace_add("write", self.update_summary)
         self.update_summary()
@@ -419,27 +456,58 @@ class ReleaseApp:
         entry.grid(row=1, column=0, sticky="ew")
         self.entries.append(entry)
         self.entry_by_key[key] = entry
-        ttk.Label(field, text=hint, style="PaperHint.TLabel").grid(row=2, column=0, sticky="w", pady=(3, 0))
+        hint_widget = ttk.Label(field, text=hint, style="PaperHint.TLabel")
+        hint_widget.grid(row=2, column=0, sticky="w", pady=(3, 0))
+        if key == "ref":
+            self.branch_hint = hint_widget
 
     def toggle_token(self):
         self.entry_by_key["token"].configure(show="" if self.show_token.get() else "•")
 
-    def update_summary(self, *_args):
+    def update_summary(self, *_args, reset=True):
         if self.running:
             return
-        recovery = recovery_mode({"build_mode": self.inputs["build_mode"].get()})
-        self.branch_label.configure(text="Workflow branch" if recovery else "Remote branch")
-        self.summary_branch_label.configure(text="WORKFLOW BRANCH" if recovery else "SOURCE BRANCH")
-        self.entry_by_key["mac_workflow"].configure(state="disabled" if recovery else "normal")
-        for key, fallback in [("repository", "No repository selected"), ("ref", "Repository default branch"), ("tag", "No tag entered")]:
-            self.summary[key].set(self.inputs[key].get().strip() or fallback)
-        if hasattr(self, "target_repo"):
+        request = {key: variable.get() for key, variable in self.inputs.items()}
+        local = local_mode(request)
+        mode = normalize_local(request)["build_mode"] if local else "windows_recovery" if recovery_mode(request) else "both"
+        recovery = mode == "windows_recovery"
+        profile = {}
+        if local:
+            try:
+                profile = load_profile(request.get("app_profile", ""))
+            except RuntimeError:
+                pass
+        no_mac = bool(profile) and not profile["mac_assets"]
+        self.branch_hint.configure(text="Blank uses " + profile.get("release_branch", "release-{version}") if mode == "local_release" else "Original tag supplies the code" if mode == "local_windows" else "Blank uses the default branch")
+        self.branch_label.configure(text="Release branch" if mode == "local_release" else "Unused for existing tag" if mode == "local_windows" else "Workflow branch" if recovery else "Remote branch")
+        self.summary_branch_label.configure(text="RELEASE BRANCH" if mode == "local_release" else "SOURCE" if mode == "local_windows" else "WORKFLOW BRANCH" if recovery else "SOURCE BRANCH")
+        self.entry_by_key["ref"].configure(state="disabled" if mode == "local_windows" else "normal")
+        self.entry_by_key["windows_workflow"].configure(state="disabled" if local else "normal")
+        self.entry_by_key["mac_workflow"].configure(state="disabled" if mode in ("windows_recovery", "local_windows") or no_mac else "normal")
+        self.entry_by_key["tag_input"].configure(state="disabled" if mode == "local_windows" or (local and no_mac) else "normal")
+        self.entry_by_key["notes_file"].configure(state="normal" if mode == "local_release" else "disabled")
+        for key in ("local_repo", "app_profile"):
+            self.entry_by_key[key].configure(state="normal" if local else "disabled")
+        for key, button in zip(("local_repo", "app_profile", "notes_file"), self.browse_buttons):
+            button.configure(state="normal" if local and (key != "notes_file" or mode == "local_release") else "disabled")
+        self.footer.set("Build release runs the full local pipeline and publishes after Windows succeeds." if mode == "local_release" else "Builds the original tag locally and uploads Windows installers; macOS is preserved." if mode == "local_windows" else "Only pushed code is built. Your workflows decide when the release is published.")
+        for key, fallback in [("repository", "No repository selected"), ("ref", "Existing release tag" if mode == "local_windows" else ("release-" + self.inputs["tag"].get()[1:] if re.fullmatch(r"v\d+\.\d+\.\d+", self.inputs["tag"].get()) else "Release branch from tag") if mode == "local_release" else "Repository default branch"), ("tag", "No tag entered")]:
+            self.summary[key].set((self.inputs[key].get().strip() if not (mode == "local_windows" and key == "ref") else "") or fallback)
+        if reset and hasattr(self, "target_repo"):
             for platform, variable in self.platform_status.items():
                 variable.set(f"{platform}  ·  Not requested")
             self.actions_button.configure(state="disabled")
             self.release_button.configure(state="disabled")
             self.status.set("Ready to prepare a release")
             self.status_label.configure(foreground="#62665f")
+
+    def browse_local(self, key, title):
+        if key == "local_repo":
+            result = filedialog.askdirectory(title=title, parent=self.root)
+        else:
+            result = filedialog.askopenfilename(title=title, parent=self.root, filetypes=[("App profile", "*.json")] if key == "app_profile" else [("Release notes", "*.md"), ("Text files", "*.txt")])
+        if result:
+            self.inputs[key].set(result)
 
     def copy_log(self):
         self.root.clipboard_clear()
@@ -457,7 +525,8 @@ class ReleaseApp:
         request = {key: var.get().strip() for key, var in self.inputs.items()}
         try:
             validate_request(request)
-            powershell_command()
+            if not local_mode(request):
+                powershell_command()
         except (ValueError, RuntimeError) as exc:
             self.status.set("Check release details")
             self.status_label.configure(foreground="#a13226")
@@ -481,10 +550,14 @@ class ReleaseApp:
         self.log.delete("1.0", "end")
         self.log.configure(state="disabled")
         self.append_log(f"Release request: {self.target_repo} / {self.target_tag}")
-        self.recovery = recovery_mode(request)
+        self.local = local_mode(request)
+        self.local_kind = normalize_local(request)["build_mode"] if self.local else ""
+        self.recovery = recovery_mode(request) or self.local_kind == "local_windows" or (self.local and not load_profile(request["app_profile"])["mac_assets"])
         for platform, variable in self.platform_status.items():
             variable.set(f"{platform}  ·  Not requested" if self.recovery and platform == "macOS" else f"{platform}  ·  Waiting")
         self.mode_control.configure(state="disabled")
+        for button in self.browse_buttons:
+            button.configure(state="disabled")
         for entry in self.entries:
             entry.configure(state="disabled")
         self.token_toggle.configure(state="disabled")
@@ -500,7 +573,7 @@ class ReleaseApp:
     def stop_monitoring(self):
         self.stop_event.set()
         self.stop_button.configure(state="disabled")
-        self.status.set("Stopping local monitoring…")
+        self.status.set("Stopping after the current step…" if getattr(self, "local", False) else "Stopping local monitoring…")
 
     def update_platform(self, event):
         if event["kind"] == "status":
@@ -531,7 +604,8 @@ class ReleaseApp:
                 if event["kind"] == "monitoring":
                     self.monitoring = True
                     self.stop_button.configure(state="normal")
-                    self.status.set("Monitoring GitHub builds…")
+                    self.status.set("Running local release…" if getattr(self, "local", False) and event["message"].startswith("Local Windows") else "Monitoring GitHub builds…")
+                    self.stop_button.configure(text="Stop after step" if getattr(self, "local", False) else "Stop monitoring")
                     self.start_button.configure(text="Monitoring…")
                     self.append_log(event["message"])
                 elif event["kind"] == "finished":
@@ -546,9 +620,8 @@ class ReleaseApp:
                     for entry in self.entries:
                         entry.configure(state="normal")
                     self.mode_control.configure(state="readonly")
-                    if getattr(self, "recovery", False):
-                        self.entry_by_key["mac_workflow"].configure(state="disabled")
-                    self.status.set(("Windows build completed successfully" if getattr(self, "recovery", False) else "Both builds completed successfully") if event["success"] else "Monitoring stopped · check GitHub" if self.stop_event.is_set() else "Release not successful · see activity")
+                    self.update_summary(reset=False)
+                    self.status.set(("Windows installers verified" if getattr(self, "local_kind", "") == "local_windows" else "Release verified: configured assets" if getattr(self, "local_kind", "") == "local_release" else "Windows build completed successfully" if getattr(self, "recovery", False) else "Both builds completed successfully") if event["success"] else "Monitoring stopped · check GitHub" if self.stop_event.is_set() else "Release not successful · see activity")
                     self.status_label.configure(foreground="#326346" if event["success"] else "#a13226")
                     for platform, variable in self.platform_status.items():
                         if variable.get().endswith("Waiting"):

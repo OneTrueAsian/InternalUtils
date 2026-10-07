@@ -1,197 +1,207 @@
-# GitHub Release Tool
+# Release Tool
 
-A Windows desktop UI that uses `Start-GitHubRelease.ps1` to create a release tag
-and request **both Windows and macOS** GitHub Actions workflows. Builds run on
-GitHub, and your workflows publish the release assets.
+Build and publish Tauri releases using the process in [RELEASE-PROCESS.md](RELEASE-PROCESS.md).
+The default **Local: full release** mode builds Windows on your computer and
+uses GitHub Actions only for macOS. This reuses the local Cargo cache instead
+of installing and rebuilding Windows dependencies on a fresh GitHub runner.
+First-time local builds can still take several minutes; no completion time is guaranteed.
 
-## Features
-
-- Light desktop layout with release details and workflow settings on separate tabs.
-- Live target summary and individual Windows/macOS build status through completion.
-- Windows-only recovery of existing tags using a separate workflow branch.
-- Inline validation errors, scrollable activity log, clickable run links and log copying.
-- Token visibility toggle that resets when starting, with no saved credentials.
-- Hover/click help for every field, with keyboard activation and a bundled offline user guide.
-- Configurable repository, branch, tag, workflow filenames and shared tag input name.
-- Resume an existing tag at the same commit, without overwriting other tags.
-
-## Launch
-
-Requires Windows, Python 3.10+ with Tkinter (included with the standard Windows
-Python installer), and Windows PowerShell 5.1 or PowerShell 7. No pip packages
-are needed.
-
-Keep `Start-GitHubRelease.ps1`, `release_ui.py`, `release_monitor.py`,
-`ReleaseTool.pyw` and `help.html`
-together. The launcher checks that the PowerShell script exists and can be read
-before starting. After updating the checkout, restart any open utility window.
-
-Double-click `ReleaseTool.pyw`, or run:
+## Launch and prerequisites
 
 ```powershell
 python .\release-tool\ReleaseTool.pyw
 ```
 
-Enter the target `owner/repo`, remote branch, release tag, and GitHub API token.
-The repository field starts blank. A blank branch uses the target repo's default
-branch. The **Workflow settings** tab contains editable filenames, initially
-`release-windows.yml` and `build-macos.yml`, and the tag input name.
-Click **Build release**; follow the clickable run links or use **View builds**
-and **View release**. A live target summary lets you check the repository, branch
-and tag before starting. After dispatch, the UI polls the exact Windows and macOS runs every 15 seconds
-until they complete. In normal mode, success requires both workflows; recovery
-mode requires only Windows.
-Failures and cancellations show their run links, failed job/step names and
-short redacted error excerpts when available.
-**Stop monitoring** stops local polling while GitHub builds continue. **Copy log** copies the redacted activity log.
+Requires Windows, Python 3.10+ with Tkinter, PowerShell 5.1/7, Git, GitHub CLI,
+Node/npm, Rust and the application's Tauri CLI dependency. Windows builds need
+Visual Studio C++ build tools and the WebView2 runtime. Apps using vendored
+OpenSSL also need Strawberry Perl and a short repository/target path. The
+Vault Spend profile puts `C:\Strawberry\perl\bin` first when installed; set
+`perl_bin` for another installation. It rejects build paths longer than its
+configurable `build_path_limit` (90 by default).
 
-Click **Help & setup** in the toolbar to open the bundled [user guide](help.html) in your
-browser. It covers setup, token permissions, every form field, a release example,
-retries and troubleshooting. The guide also works offline.
+The supplied token is used through `GH_TOKEN` for GitHub CLI and the scoped Git
+credential helper, never through command-line arguments or saved files. Build
+commands do not receive it. Classic tokens need `repo` and `workflow`; use the
+equivalent Contents/Actions write access for fine-grained tokens, with Workflows
+permission where GitHub requires it. SSH Git remotes also need working SSH authentication.
 
-The UI clears the token field when starting. A token copy remains in worker memory
-while checking build status and is released when monitoring ends or the app closes. Credentials go to PowerShell via a
-private stdin pipe, never command-line arguments, saved preferences or files.
-The log redacts the supplied token. Credentials still exist briefly in process
-memory; Python strings cannot guarantee secure erasure.
+## New release: full local pipeline
 
-## Target repository setup
+1. Select **Local: full release** on Release details. Enter repository, a new
+   stable tag such as `v1.0.1`, and token. Leave Release branch blank to use
+   the profile's `release-{version}` pattern. The release branch must differ
+   from the default branch.
+2. Open **Local release**. Select the application's local Git clone, app JSON
+   profile, and a Markdown release-notes file. Commit application code changes
+   first; tracked changes block startup. Unrelated untracked files are left alone.
+3. Review **Workflow settings**: the macOS filename and tag input name matter.
+   Windows is built locally, so its workflow filename is unused.
+4. Click **Build release**. This authorizes the whole pipeline: changes to version
+   files and release metadata, checks, commits, merge/push, local build, immediate
+   publication and the macOS build. There are no repeated approval prompts.
 
-This utility orchestrates existing workflows. It does not install workflows or
-compile the target app itself. Each target workflow must:
+The pipeline follows these steps:
 
-- Exist on GitHub's default branch and at the selected remote commit.
-- Be enabled, and declare `workflow_dispatch:` in block YAML format.
-- Use manual dispatch only for publishing; remove `push` triggers on both branches.
-- Accept an input named `tag` (or the input name you enter), or accept no inputs
-  when the UI's **Tag input name** is blank.
-- Build the supplied tag and create/update the corresponding GitHub Release.
+- Verify local origin matches the requested GitHub repository, authenticate,
+  fetch tags and reject an existing new-release tag. Show changes since the
+  previous latest release; prevent publishing an older version as latest.
+- Update `package.json`, `src-tauri/tauri.conf.json` and the Rust package version;
+  regenerate both lockfiles using profile commands. For the Vault Spend profile,
+  add the new in-app changelog entry, update `CANDIDATE` and its expected notes,
+  and retain the previous release's notes test.
+- Run type check, lint, unit tests, Rust format/clippy checks and Rust tests.
+  A failing command is repeated once alone, then stops the pipeline if it still fails.
+- Commit `Release X.Y.Z` on the release branch, push it, merge into the default
+  branch with `--no-ff`, and push. If incoming default-branch changes alter the
+  tested tree, repeat the gates on the merged tree; otherwise reuse their results.
+- Run `npx tauri build` through PowerShell. Require two fresh, nonempty installers
+  with exact product/version filenames; never select the newest file or a wildcard.
+- Create the stable GitHub release with the exact merge SHA as `--target` and
+  attach Windows installers. The tag is created here, after the build succeeds.
+- Dispatch the manual macOS workflow against that tag and monitor the exact run.
+- Verify all four expected nonempty assets, stable publication, the tag SHA,
+  and `releases/latest`. Success is reported only after these checks.
 
-For example, `release-windows.yml` and `build-macos.yml` can both accept a
-`tag` input. Choose workflows that publish release assets. A build-check workflow
-that only uploads test artifacts will not publish a release.
+**No E2E commands are added by default**, as requested in the source process.
+Add an application's additional required gates to `check_commands`. No test is
+silently skipped after failure. A failed pipeline leaves prepared files, commits
+or published assets in place for diagnosis; it never resets your work or withdraws
+a release automatically. A prepared, clean release version can resume before tag
+creation when its notes and candidate metadata match the supplied notes.
 
-## Release prerequisites
+## Release notes
 
-Before clicking **Build release**:
+Write notes outside the application repository. Bullets under **What's new** and
+**Fixes and improvements** become the in-app notes for the Vault Spend adapter.
+The tool does not invent features or release descriptions. Example:
 
-1. Commit and push both release workflow files under `.github/workflows/` to the
-   app repository's default branch and selected release branch. Local files alone
-   do not register a workflow on GitHub. Use the exact published filenames in the UI.
-2. Confirm both workflows are enabled in GitHub Actions, support `workflow_dispatch`,
-   and accept the selected tag input name (or no inputs when that field is blank).
-3. Where the workflow requires matching versions, align the release tag and app
-   version: `v1.0.0` corresponds to `1.0.0`. For Tauri, update `package.json`,
-   `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and the app version entries
-   in `package-lock.json` and `Cargo.lock`. Naming a branch does not bump its version.
-4. Add the new release notes/What's New entry, update any release-candidate checks,
-   and pass the app repository's required release tests.
-5. Commit and push the prepared release branch, then select it in the UI. The default
-   branch may still have an older app version; select the branch you intend to release.
-6. Verify token access and use a new tag, or an existing tag at the same commit.
-   A tag created before these prerequisites were committed will not include them.
+```markdown
+My App 1.0.1 makes account setup easier.
 
-The tool does not install workflows, update versions or write release notes.
-The **Help & setup** page includes this checklist and troubleshooting for missing
-workflows, version mismatches and release metadata failures.
+## What's new
 
-GitHub's requirement for workflows on the default branch is documented in
-[Manually running a workflow](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
+- **Account setup.** Clearer instructions help you create an account.
 
-Create a fine-grained personal access token with access to the **target** repository
-with **Contents: read/write** and **Actions: read/write**. GitHub may also require
-**Workflows: read/write** for reference creation involving workflow files; see
-[Git references API permissions](https://docs.github.com/en/rest/git/refs#create-a-reference).
-For multiple apps, you can select more repositories or all repositories owned by
-the token's selected resource owner. For a classic token, use `repo` (and `workflow` where required). Organization
-tokens may need additional owner approval or SSO authorization.
+## Fixes and improvements
 
-## Tag and retry behavior
-
-In normal mode, the tool tags the current commit of the selected **remote** branch. It does not
-commit, push, bump versions or include local changes. Set and commit the app's
-version before launching the release. Publication, draft/prerelease settings,
-signing and test gates remain controlled by the target workflows.
-
-Existing tags pointing to the same commit are reusable; conflicting tags are
-rejected and never moved or deleted. Annotated tags are resolved to their commit.
-Both workflows are checked before creating the tag. If one dispatch fails, the
-other is still attempted, and the tag remains available for retry.
-
-Before each dispatch, the tool checks for an existing queued/running/successful
-push or manual run for that exact tag and commit and reuses its link. Detection
-requires manual-only publishing workflows to prevent delayed tag-push runs from
-racing the dispatch. Avoid starting the same release from two clients simultaneously.
-Failed/cancelled runs can be requested again by retrying with the same tag and
-original branch commit. Retrying a failed release may dispatch failed workflows again.
-
-“Build requested” means dispatch succeeded. The desktop UI then checks completion;
-“Both builds completed successfully” requires both run conclusions to be `success`.
-Monitoring stops after two hours, or after three consecutive status-read failures
-for a run; those results are reported as unknown, not successful.
-The CLI dispatches workflows and prints structured run metadata; live monitoring
-is provided by the desktop UI. A release page may initially be absent. The UI never sends a token
-to build runners; the workflows use their own `GITHUB_TOKEN`/repository secrets.
-
-## PowerShell CLI
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\release-tool\Start-GitHubRelease.ps1 -Repository owner/repo -Ref main -Tag v1.2.3
+- Fixed the saved account name disappearing after a restart.
 ```
 
-The token is requested with a masked prompt. The execution-policy flag applies
-only to this process. Output is newline-delimited JSON, also consumed by the UI.
+Unsigned installation notes are appended when absent. Generated publication
+notes live in a sibling `.release-tool-notes` folder (or `notes_dir`), outside the
+app repository and outside Windows Temp by default, and are removed afterward.
+Your input notes file is never overwritten.
 
-## Offline checks
+## Existing release: local Windows only
+
+Select **Local: Windows existing tag**, enter the existing tag and token, then
+choose the local app folder and profile. Branch and notes fields are unused.
+The tool temporarily checks out the tag's original commit, runs the configured
+checks, builds Windows locally, uploads its installers, verifies them and restores
+your original checkout. It does not bump versions, commit, merge, move tags or
+start macOS. Existing macOS assets and release notes are preserved.
+
+An existing published stable release page is required. Matching Windows assets
+with identical SHA-256 digests are retained. If a different asset of the same
+name exists, the tool stops; set `replace_windows_assets: true` in your profile
+to explicitly allow `gh release upload --clobber`. That flag deletes matching
+assets before re-uploading them, so a failed upload can leave them missing.
+
+## Per-app profiles
+
+Use `profiles/tauri-vault-spend.json` for Vault Spend's workspace, changelog and
+metadata-test conventions. Use `profiles/tauri-generic.json` as a starting point
+for another Tauri app. Neither profile stores a personal repository or token.
+Copy a profile outside this utility before customizing it.
+
+| Setting | Purpose |
+| --- | --- |
+| `default_branch`, `release_branch` | Merge destination and release-branch pattern |
+| `cargo_manifest`, `cargo_lock`, optional `cargo_crate` | Rust package and lockfile layout |
+| `changelog_file`, `metadata_test` | Optional supported TypeScript release-metadata adapter |
+| `lock_commands`, `setup_commands` | Lockfile regeneration / existing-tag dependency setup |
+| `prepare_commands`, `additional_release_files` | App-specific preparation hooks and their tracked output files |
+| `check_commands` | Required gates, each an argument array, e.g. `["npm", "test"]` |
+| `build_command` | Defaults to `["npx", "tauri", "build"]` |
+| `windows_assets`, `mac_assets`, `architecture` | Exact versioned output/name patterns |
+| optional `target_dir` | Cargo build cache used by checks and builds |
+| `requires_strawberry_perl`, `perl_bin`, `build_path_limit` | OpenSSL Windows prerequisites |
+| `unsigned`, optional `notes_dir` | Installation guidance and generated-note location |
+| `replace_windows_assets` | Explicit replacement of existing Windows installers |
+
+Commands are argument arrays, not interpolated shell strings. Preparation hooks
+can use `{version}` and `{tag}` placeholders. Profile commands run locally with
+your permissions, so review profiles before using them. The built-in adapter
+expects standard Tauri JSON versions and literal Rust `[package]` version/name;
+the optional changelog adapter expects a literal `CHANGELOG` record and the
+documented `CANDIDATE` test convention. Other metadata layouts need explicit hooks.
+
+## GitHub-only alternatives
+
+The original **Windows + macOS** and **Windows only · existing tag** modes remain.
+They dispatch remote workflows through `Start-GitHubRelease.ps1`; the latter uses
+the updated Windows recovery workflow on a separate workflow branch. They retain
+the app workflow's own gates, including its desktop E2E step, and can take longer.
+Do not select these modes to use the new local process.
+
+Remote release workflows must be enabled, registered on the default branch,
+exist on the selected source, and use manual dispatch only. Recovery requires
+`recovery`, `source_sha` and tag inputs plus `Recover Windows <tag>` run naming.
+Tokens are passed to the remote PowerShell dispatcher through stdin.
+
+## Failures, stopping and recovery
+
+**Stop after step** stops a local pipeline before its next command, without killing
+the current build or undoing a push/publication. During macOS monitoring it stops
+polling; the GitHub build continues. Logs retain command output and redact the token.
+**Copy log** copies the activity log; it is not automatically written to disk.
+
+After a check failure, fix the cause on the release branch and commit the prepared
+files before restarting. Never bypass a failing gate. After a partial published
+release, the tag is immutable: use local Windows existing-tag mode for Windows
+assets, and rerun a temporary macOS failure from its GitHub run page or:
+
+```powershell
+gh run view RUN_ID --repo owner/app-repo --log-failed
+gh run rerun RUN_ID --repo owner/app-repo --failed
+```
+
+Withdrawal and asset deletion are deliberate manual recovery actions described
+in [RELEASE-PROCESS.md](RELEASE-PROCESS.md); the tool never performs them automatically.
+A repository lock prevents two local releases at once. If the process crashed,
+confirm it exited before removing `.git/internalutils-release.lock`.
+
+## Offline verification
 
 ```powershell
 python -m unittest discover -s release-tool/tests -v
 ```
 
-These checks exercise the real PowerShell script through a fake GitHub transport,
-credential handling, tag conflicts/resumption, both dispatches, automatic macOS
-runs, partial failures, inline validation, live summaries, token visibility,
-redacted log copying and Tkinter form state. They never contact GitHub or start
-a build. A real GitHub release run is required to validate the target repo's build
-environment and packaging workflow.
+Tests use disposable files and fake GitHub/command transports. They cover the
+full pipeline, blockers, tag pinning, exact installers, four-asset/latest checks,
+partial publication, existing-tag recovery, command quoting and token handling.
+They never build/publish a real app or prove that an application's checks will pass.
 
-## Retries and failure diagnostics
 
-Publishing workflows must use manual-only workflow_dispatch on both default and source branches. Remove tag push triggers to avoid duplicate publishing. Retrying a failed tag builds the same commit: commit code fixes, update versions and release notes, and select a new tag. Existing tags and assets are preserved. Monitoring tolerates 60 seconds of clock skew and excludes runs seen before dispatch. Failure diagnostics include redacted GitHub error details and short job-log excerpts when available. Actions read permission covers these checks.
+## Using another repository or application
 
-## Windows-only recovery for an existing release
+Select its `owner/repo`, local checkout, and an app profile in **Local release**. Profiles contain no account or token. Copy a bundled profile to a new JSON file and select that file in the UI:
 
-Select **Windows only · existing tag** in the Build selector. The branch field
-becomes **Workflow branch**: enter the branch containing the updated Windows
-workflow (usually `main`). The **Release tag** is the existing application tag,
-for example `v1.0.0`; it can point to a different commit from the workflow branch.
-macOS settings are disabled, macOS is not dispatched, and success requires only
-the selected Windows build. The tag is never created, moved or deleted in this mode.
+- `profiles/tauri-generic.json`: Tauri/Node/Rust apps. Set Cargo paths, product name if needed, commands, target directory and exact artifact names. Optional changelog/test paths are specific to the configured app; leave them empty or supply your own preparation command.
+- `profiles/custom-app.json`: other build systems, including Python, Electron or .NET when their commands and metadata are configured. The example uses Python and a Windows ZIP; its build script is an example command you must replace or implement in your app.
+- `profiles/tauri-vault-spend.json`: the Vault Spend preset.
 
-The Windows workflow must be registered on the default branch and exist on the
-workflow branch. It must accept the selected tag input plus boolean `recovery`
-and string `source_sha`. It must name recovery runs `Recover Windows <tag>` using
-`inputs.tag` so monitoring can distinguish releases dispatched on the same branch.
-The tool supplies the original tag SHA. The workflow must check out that tag,
-verify its commit equals `source_sha`, retain version and release gates, and
-publish only Windows installers to the corresponding existing release.
+Custom profiles set `adapter` to `custom`, `product_name`, `default_branch`, `release_branch`, `required_tools`, `check_commands`, `build_command`, `target_dir`, `windows_assets`, and `version_files`. Each version file is JSON with explicit property paths, for example:
 
-Vault Spend's updated `release-windows.yml` supports this contract. It repairs
-only the hardcoded driver directory in an old E2E harness inside the runner;
-application sources stay at the original tag. All test gates still run. This
-mode cannot incorporate application bug fixes into an old release tag.
-
-```text
-Build:             Windows only · existing tag
-Repository:        owner/app-repo
-Workflow branch:   main
-Release tag:       v1.0.0
-Windows workflow:  release-windows.yml
-Tag input name:    tag
+```json
+"version_files": [{"file": "config/app.json", "keys": [["release", "version"]]}]
 ```
 
-Publish the updated workflow to the workflow/default branch before using
-recovery. A workflow present only locally cannot be dispatched. Normal
-**Windows + macOS** mode retains the original branch/tag matching rules.
+Multiple files and properties are supported, including lockfile properties such as `["packages", "", "version"]`. The tool updates only those properties, verifies that all configured versions agree, and stages only these files plus `additional_release_files`. For TOML/XML/plain-text metadata, put the authoritative version in a JSON file and use `prepare_commands` to update other files; add those outputs to `additional_release_files` and add consistency checks to `check_commands`.
 
-CLI recovery: `powershell -NoProfile -ExecutionPolicy Bypass -File .\release-tool\Start-GitHubRelease.ps1 -Repository owner/app-repo -Ref main -Tag v1.0.0 -BuildMode windows_recovery`. The token is prompted securely.
+Commands are argument arrays, for example `["dotnet", "publish", "-c", "Release"]`; `{version}` and `{tag}` are substituted in each argument. Commands run from the local repository. Configure dependency installation in `setup_commands` (existing-tag builds) and `lock_commands` (new releases). Required tools always include Git and GitHub CLI; custom profiles add only the tools you list. There are no implicit Node, Rust or E2E requirements for custom apps.
+
+List exact Windows filenames relative to `target_dir`; use `{product}`, `{version}`, and `{architecture}` where appropriate. Asset counts are configurable. Set `mac_assets` to `[]` for a Windows-only application: macOS settings are ignored and no macOS workflow is dispatched. Otherwise list exact macOS release asset names and provide a manual-only publishing workflow that accepts the UI's tag input. Final checks verify exactly the configured assets, their nonzero sizes, the pinned tag commit, and `releases/latest`.
+
+All local release profiles currently use stable `vX.Y.Z` tags. The build scripts, installers, test gates and macOS publishing workflow must already exist in the target app. A profile configures the pipeline; it does not generate another application's build system. Use only profiles and repositories you trust: their commands execute locally and Build release authorizes commits, pushes and publication.

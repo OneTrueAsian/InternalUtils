@@ -34,6 +34,34 @@ class FakeProcess:
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_local_mode_routes_to_python_pipeline_without_github_windows_dispatch(self):
+        settings = request(build_mode=release_ui.BUILD_MODES[2])
+        events = queue.Queue()
+        with patch.object(release_ui, 'run_local_release') as local_runner, patch.object(release_ui, 'powershell_command') as powershell:
+            release_ui.run_release(settings, events)
+        local_runner.assert_called_once()
+        self.assertEqual(local_runner.call_args.args[0]['build_mode'], 'local_release')
+        powershell.assert_not_called()
+
+    def test_local_default_form_has_profile_and_checks_required_paths(self):
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            app = release_ui.ReleaseApp(root)
+            self.assertEqual(app.inputs['build_mode'].get(), release_ui.BUILD_MODES[2])
+            self.assertTrue((Path(release_ui.__file__).parent / app.inputs['app_profile'].get()).is_file())
+            self.assertEqual(app.branch_label.cget('text'), 'Release branch')
+            self.assertTrue(app.entry_by_key['windows_workflow'].instate(['disabled']))
+            self.assertFalse(app.entry_by_key['notes_file'].instate(['disabled']))
+            app.inputs['build_mode'].set(release_ui.BUILD_MODES[3])
+            self.assertTrue(app.entry_by_key['notes_file'].instate(['disabled']))
+            self.assertTrue(app.entry_by_key['ref'].instate(['disabled']))
+            app.inputs['build_mode'].set(release_ui.BUILD_MODES[0])
+            self.assertFalse(app.entry_by_key['ref'].instate(['disabled']))
+            self.assertTrue(app.entry_by_key['local_repo'].instate(['disabled']))
+        finally:
+            root.destroy()
+
     def test_recovery_monitors_only_selected_windows_workflow(self):
         process = FakeProcess('{"kind":"run","workflow":"release-windows.yml","run_id":11}\n')
         settings = request(build_mode='windows_recovery')
@@ -51,6 +79,7 @@ class ReleaseTests(unittest.TestCase):
         root.withdraw()
         try:
             app = release_ui.ReleaseApp(root)
+            app.inputs["build_mode"].set(release_ui.BUILD_MODES[0])
             app.inputs['build_mode'].set(release_ui.BUILD_MODES[1])
             self.assertEqual(app.branch_label.cget('text'), 'Workflow branch')
             self.assertTrue(app.entry_by_key['mac_workflow'].instate(['disabled']))
@@ -117,6 +146,7 @@ class ReleaseTests(unittest.TestCase):
         root.withdraw()
         try:
             app = release_ui.ReleaseApp(root)
+            app.inputs["build_mode"].set(release_ui.BUILD_MODES[0])
             app.inputs["repository"].set("owner/repo")
             app.inputs["tag"].set("v1.2.3")
             app.inputs["token"].set("offline-secret")
@@ -138,6 +168,7 @@ class ReleaseTests(unittest.TestCase):
         root.attributes("-alpha", 0)
         try:
             app = release_ui.ReleaseApp(root)
+            app.inputs["build_mode"].set(release_ui.BUILD_MODES[0])
             root.geometry("860x760")
             root.update()
             for control in [*app.entries, app.start_button, app.actions_button, app.release_button]:
@@ -151,6 +182,7 @@ class ReleaseTests(unittest.TestCase):
         root.withdraw()
         try:
             app = release_ui.ReleaseApp(root)
+            app.inputs["build_mode"].set(release_ui.BUILD_MODES[0])
             self.assertEqual(app.inputs["repository"].get(), "")
             app.inputs["repository"].set("owner/another-app")
             app.inputs["tag"].set("v2.0.0")
@@ -169,6 +201,7 @@ class ReleaseTests(unittest.TestCase):
         root.withdraw()
         try:
             app = release_ui.ReleaseApp(root)
+            app.inputs["build_mode"].set(release_ui.BUILD_MODES[0])
             app.inputs["repository"].set("owner/repo")
             app.inputs["tag"].set("v1.2.3")
             app.inputs["token"].set("offline-secret")
@@ -199,6 +232,7 @@ class ReleaseTests(unittest.TestCase):
         root.withdraw()
         try:
             app = release_ui.ReleaseApp(root)
+            app.inputs["build_mode"].set(release_ui.BUILD_MODES[0])
             with patch.object(release_ui.threading, "Thread") as worker:
                 app.start()
             worker.assert_not_called()
@@ -214,6 +248,7 @@ class ReleaseTests(unittest.TestCase):
         root.withdraw()
         try:
             app = release_ui.ReleaseApp(root)
+            app.inputs["build_mode"].set(release_ui.BUILD_MODES[0])
             app.inputs["repository"].set("owner/repo")
             app.inputs["tag"].set("v1.2.3")
             app.inputs["token"].set("offline-secret")
@@ -242,6 +277,7 @@ class ReleaseTests(unittest.TestCase):
         root.withdraw()
         try:
             app = release_ui.ReleaseApp(root)
+            app.inputs["build_mode"].set(release_ui.BUILD_MODES[0])
             button = app.help_buttons["repository"]
             tooltip = app.help_tooltips["repository"]
             button.event_generate("<FocusIn>")

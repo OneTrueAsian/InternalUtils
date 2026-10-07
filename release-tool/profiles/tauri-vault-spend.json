@@ -1,0 +1,90 @@
+{
+  "default_branch": "main",
+  "release_branch": "release-{version}",
+  "cargo_manifest": "src-tauri/Cargo.toml",
+  "cargo_lock": "Cargo.lock",
+  "changelog_file": "src/changelog.ts",
+  "metadata_test": "src/releaseMetadata.test.ts",
+  "lock_commands": [
+    [
+      "npm",
+      "install"
+    ],
+    [
+      "npm",
+      "run",
+      "build"
+    ],
+    [
+      "cargo",
+      "check",
+      "--workspace"
+    ]
+  ],
+  "setup_commands": [
+    [
+      "npm",
+      "ci"
+    ],
+    [
+      "npm",
+      "run",
+      "build"
+    ]
+  ],
+  "check_commands": [
+    [
+      "npx",
+      "tsc",
+      "--noEmit"
+    ],
+    [
+      "npm",
+      "run",
+      "lint"
+    ],
+    [
+      "npm",
+      "test"
+    ],
+    [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    [
+      "cargo",
+      "test",
+      "--workspace"
+    ]
+  ],
+  "build_command": [
+    "npx",
+    "tauri",
+    "build"
+  ],
+  "windows_assets": [
+    "release/bundle/nsis/{product}_{version}_{architecture}-setup.exe",
+    "release/bundle/msi/{product}_{version}_{architecture}_en-US.msi"
+  ],
+  "mac_assets": [
+    "{product}_{version}_universal.dmg",
+    "{product}_universal.app.tar.gz"
+  ],
+  "architecture": "x64",
+  "unsigned": true,
+  "requires_strawberry_perl": true,
+  "build_path_limit": 90,
+  "replace_windows_assets": false
+}

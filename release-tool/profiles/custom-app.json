@@ -1,0 +1,46 @@
+{
+  "adapter": "custom",
+  "product_name": "Example App",
+  "default_branch": "main",
+  "release_branch": "release-{version}",
+  "version_files": [
+    {
+      "file": "app.json",
+      "keys": [
+        [
+          "version"
+        ]
+      ]
+    }
+  ],
+  "required_tools": [
+    "python"
+  ],
+  "check_commands": [
+    [
+      "python",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests"
+    ]
+  ],
+  "setup_commands": [],
+  "prepare_commands": [],
+  "lock_commands": [],
+  "build_command": [
+    "python",
+    "scripts/build.py",
+    "--version",
+    "{version}"
+  ],
+  "target_dir": "dist",
+  "windows_assets": [
+    "{product}-{version}-windows.zip"
+  ],
+  "mac_assets": [],
+  "unsigned": false,
+  "additional_release_files": [],
+  "replace_windows_assets": false
+}

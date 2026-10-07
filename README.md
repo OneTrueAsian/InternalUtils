@@ -7,39 +7,35 @@ transcription. Each tool runs independently and has its own setup requirements.
 
 | Tool | Purpose | Entry point | Guide |
 | --- | --- | --- | --- |
-| GitHub Release Tool | Create a release tag and start Windows/macOS build and release workflows for a GitHub app repository. | `release-tool/ReleaseTool.pyw` | [Setup and usage](release-tool/README.md) |
+| GitHub Release Tool | Prepare releases, build Windows locally, publish pinned tags and installers, then watch macOS and verify assets. | `release-tool/ReleaseTool.pyw` | [Setup and usage](release-tool/README.md) |
 | VideoTranscribe | Turn a local video into a timestamped text transcript or SRT subtitles using Whisper. | `VideoTranscribe.pyw` | [Setup and usage](docs/video-transcribe.md) |
 
 ## GitHub Release Tool
 
-Use this tool to start releases for different GitHub applications from a desktop
-form. Enter the target repository, remote branch, release tag and API token;
-configure the Windows and macOS workflow filenames in **Workflow settings**.
+Use the default **Local: full release** mode to follow the documented pipeline:
+update versions and notes, run configured checks, commit/merge/push, build Windows
+on your computer, publish at the recorded merge SHA, watch macOS on GitHub and
+verify all four assets plus the latest release. **Local: Windows existing tag**
+adds Windows installers to an existing release while preserving the tag and macOS.
 
-The UI includes a live target summary, per-platform build monitoring, readable
-errors, clickable run links, log copying, field help and an offline user guide.
-Tokens are masked and passed to PowerShell through stdin; they are not saved to
-disk or placed in command-line arguments.
+The form has local repository/profile/notes pickers, per-platform status, command
+logs, field help and an offline guide. Per-app JSON profiles make the gates,
+metadata and installer patterns configurable. No E2E commands are added by default.
+The older GitHub-only modes remain available and retain their workflow gates.
 
-**Requirements:** Windows, Python 3.10+ with Tkinter, and Windows PowerShell 5.1
-or PowerShell 7. No pip packages are required for this tool. The target repository
-needs enabled Windows and macOS release workflows that accept manual dispatch,
-and a GitHub token with the necessary repository permissions.
-
-Run from the repository root:
+**Requirements:** Windows, Python 3.10+ with Tkinter, PowerShell, Git, GitHub CLI,
+Node/npm, Rust and Tauri build prerequisites. OpenSSL apps also need Strawberry
+Perl and short build paths. Local build dependencies and Cargo outputs are reused.
+The supplied token is kept in memory and passed only through stdin or the scoped
+Git/GitHub CLI environment; it is never saved or included in command arguments.
 
 ```powershell
 python .\release-tool\ReleaseTool.pyw
 ```
 
-You can also double-click `ReleaseTool.pyw`. Keep the files in `release-tool`
-together. The tool polls both workflow runs until completion and reports success only when
-both succeed. **Stop monitoring** leaves builds running on GitHub; their links
-remain available for logs and publication details. Only pushed code is built.
-
-See the [release tool README](release-tool/README.md) for token permissions,
-workflow setup, retries and CLI usage. The bundled [Help page](release-tool/help.html)
-opens from **Help & setup** in the UI and can be read offline.
+See [setup and app profiles](release-tool/README.md), the bundled
+[Help page](release-tool/help.html), and the source
+[release process](release-tool/RELEASE-PROCESS.md).
 
 ## VideoTranscribe
 
@@ -82,6 +78,9 @@ InternalUtils/
     ├── ReleaseTool.pyw       # Release UI entry point
     ├── release_ui.py         # Desktop interface
     ├── release_monitor.py    # Read-only workflow status checks
+    ├── local_release.py      # Local Windows release pipeline
+    ├── Run-LocalCommand.ps1   # Safe command bridge
+    ├── profiles/             # Per-app JSON release recipes
     ├── Start-GitHubRelease.ps1
     ├── README.md             # Release setup and usage
     ├── help.html             # Offline user guide
@@ -98,5 +97,3 @@ python -m unittest discover -s release-tool/tests -v
 
 These tests use fake GitHub responses and do not create tags or start remote
 builds. They do not validate VideoTranscribe or an app's GitHub build environment.
-
-The release tool also supports Windows-only recovery: run a compatible workflow from `main`, build an existing version tag, and add Windows installers to its release while preserving macOS assets. See [recovery setup](release-tool/README.md#windows-only-recovery-for-an-existing-release).
