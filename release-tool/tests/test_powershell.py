@@ -29,6 +29,8 @@ class PowerShellIntegrationTests(unittest.TestCase):
         result, events, posts = self.scenario('new')
         self.assertEqual(result.returncode, 0, events)
         self.assertEqual(len(posts), 3)
+        calls = next(e['calls'] for e in events if e['kind'] == 'test_calls')
+        self.assertEqual(calls[0]['uri'], 'https://api.github.com/repos/owner/repo')
         tag_body = json.loads(posts[0]['body'])
         self.assertEqual(tag_body, {'ref': 'refs/tags/v1.2.3', 'sha': 'abc123'})
         for dispatch in posts[1:]:
@@ -93,6 +95,19 @@ class PowerShellIntegrationTests(unittest.TestCase):
             with patch.object(release_ui, 'SCRIPT', missing):
                 with self.assertRaisesRegex(RuntimeError, 'Release script is missing'):
                     release_ui.powershell_command()
+
+
+    def test_repository_404_identifies_target_and_does_not_mutate_state(self):
+        result, events, posts = self.scenario('repository404')
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(posts, [])
+        errors = [e['message'] for e in events if e['kind'] == 'error']
+        self.assertEqual(len(errors), 1)
+        self.assertIn('repository owner/repo (HTTP 404)', errors[0])
+        self.assertIn('token resource owner', errors[0])
+        self.assertIn('Private repositories', errors[0])
+        calls = next(e['calls'] for e in events if e['kind'] == 'test_calls')
+        self.assertEqual(len(calls), 1)
 
 
 

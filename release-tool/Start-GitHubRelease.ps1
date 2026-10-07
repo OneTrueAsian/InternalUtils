@@ -32,8 +32,11 @@ function Send-Event {
 
 function Invoke-GitHub {
     param([string]$Path, [string]$Method = 'GET', $Body = $null, [switch]$AllowMissing)
+    $apiUri = "https://api.github.com/repos/$Repository"
+    if ($Path) { $apiUri += "/$Path" }
+    $resource = if ($Path) { "$Repository/$Path" } else { "repository $Repository" }
     $request = @{
-        Uri = "https://api.github.com/repos/$Repository/$Path"
+        Uri = $apiUri
         Headers = $headers; Method = $Method; TimeoutSec = 45; ErrorAction = 'Stop'
     }
     if ($null -ne $Body) {
@@ -48,8 +51,13 @@ function Invoke-GitHub {
         switch ($status) {
             401 { throw 'GitHub rejected the token. Check its value and expiration.' }
             403 { throw 'GitHub denied access. Check token permissions, organization authorization and rate limits.' }
-            404 { throw "GitHub could not find $Path. Check the repository, branch, workflow and token access." }
-            422 { throw "GitHub rejected $Path. Check the tag, workflow dispatch inputs and selected ref." }
+            404 {
+                if (-not $Path) {
+                    throw "GitHub cannot access repository $Repository (HTTP 404). Check the repository name, token resource owner and selected repositories. Private repositories also return 404 when the token lacks access."
+                }
+                throw "GitHub could not find $resource (HTTP 404). Check the branch or workflow and token access."
+            }
+            422 { throw "GitHub rejected $resource. Check the tag, workflow dispatch inputs and selected ref." }
             default { throw "GitHub request failed (HTTP $status). Check connectivity or try again from the Actions page." }
         }
     }
@@ -87,7 +95,7 @@ try {
         'X-GitHub-Api-Version' = '2026-03-10'
         'User-Agent' = 'InternalUtils-Release-Tool'
     }
-    Send-Event 'log' 'Checking repository and remote branch...'
+    Send-Event 'log' "Checking repository $Repository..."
     $repo = Invoke-GitHub ''
     if (-not $Ref) {
         if ($InputJson) { $Ref = $repo.default_branch } else {
@@ -111,6 +119,7 @@ try {
     foreach ($file in $files) {
         if ($file -notmatch '^[A-Za-z0-9_-][A-Za-z0-9_.-]*\.ya?ml$') { throw 'Enter workflow filenames such as build-macos.yml.' }
     }
+    Send-Event 'log' "Checking remote branch $Ref..."
     $branch = Invoke-GitHub ('branches/' + [Uri]::EscapeDataString($Ref))
     $sha = $branch.commit.sha
     $encodedTag = [Uri]::EscapeDataString($Tag)

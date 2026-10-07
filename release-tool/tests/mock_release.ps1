@@ -1,5 +1,5 @@
 # Offline integration fixture: no GitHub requests and no real credentials.
-param([ValidateSet('new', 'same', 'different', 'missing', 'partial', 'automatic', 'annotated')][string]$Scenario = 'new')
+param([ValidateSet('new', 'same', 'different', 'missing', 'partial', 'automatic', 'annotated', 'repository404')][string]$Scenario = 'new')
 $global:releaseMockScenario = $Scenario
 $global:releaseMockCalls = [Collections.Generic.List[object]]::new()
 function Invoke-RestMethod {
@@ -7,7 +7,15 @@ function Invoke-RestMethod {
     if ($Headers.Authorization -ne 'Bearer offline-secret') { throw 'Unexpected authentication' }
     $global:releaseMockCalls.Add(@{ uri = $Uri; method = $Method; body = $Body })
     $path = ([Uri]$Uri).AbsolutePath
-    if ($path.EndsWith('/owner/repo/')) { return [pscustomobject]@{ default_branch = 'main' } }
+    if ($path -eq '/repos/owner/repo') {
+        if ($global:releaseMockScenario -eq 'repository404') {
+            $ex = [Exception]::new('missing')
+            $ex | Add-Member NoteProperty Response ([pscustomobject]@{ StatusCode = 404 })
+            throw $ex
+        }
+        return [pscustomobject]@{ default_branch = 'main' }
+    }
+    if ($path -eq '/repos/owner/repo/') { throw 'Repository URL must not have a trailing slash' }
     if ($path.Contains('/branches/')) { return [pscustomobject]@{ commit = @{ sha = 'abc123' } } }
     if ($path.Contains('/git/ref/tags/')) {
         if ($global:releaseMockScenario -eq 'new') {
@@ -15,7 +23,7 @@ function Invoke-RestMethod {
             $ex | Add-Member NoteProperty Response ([pscustomobject]@{ StatusCode = 404 })
             throw $ex
         }
-        $type = if ($global:releaseMockScenario -eq 'annotated') { 'tag' } else { 'commit' }
+        $type = if ($global:releaseMockScenario -eq 'annotated', 'repository404') { 'tag' } else { 'commit' }
         $sha = if ($global:releaseMockScenario -eq 'different') { 'other-commit' } else { 'abc123' }
         return [pscustomobject]@{ object = [pscustomobject]@{ type = $type; sha = $sha } }
     }
