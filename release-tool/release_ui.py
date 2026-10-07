@@ -25,6 +25,49 @@ REMOTE_BRANCH_HELP = (
     "Both workflow files must exist on the selected branch and on the repository's default branch."
 )
 
+FIELD_HELP = {
+    "repository": (
+        "Enter the GitHub repository you want to build, in owner/repo format.\n\n"
+        "Example: OneTrueAsian/vault-spend. This is the app repository, "
+        "not the InternalUtils repository hosting this tool."
+    ),
+    "ref": REMOTE_BRANCH_HELP,
+    "tag": (
+        "Enter the release tag to create, such as v1.3.0. "
+        "The tag will point to the selected remote branch's latest pushed commit.\n\n"
+        "Commit and push any app version changes first; this tool does not update versions. "
+        "An existing tag can be reused only when it points to the same commit. "
+        "Tags are never moved or overwritten."
+    ),
+    "token": (
+        "Enter a GitHub personal access token with access to the target repository.\n\n"
+        "Fine-grained tokens need Contents: read/write and Actions: read/write. "
+        "GitHub may also require Workflows: read/write for tag creation involving workflow files.\n\n"
+        "The token is masked, cleared from the form when starting, and never saved to disk. "
+        "It is passed to PowerShell through a private input pipe."
+    ),
+    "windows_workflow": (
+        "Enter the filename of your Windows build and release workflow, "
+        "such as release-windows.yml, without the .github/workflows/ folder.\n\n"
+        "It must exist in the target repository on both the default branch and the selected branch, "
+        "be enabled, and support workflow_dispatch. "
+        "The workflow controls testing, installers and publication."
+    ),
+    "mac_workflow": (
+        "Enter the filename of your macOS build and release workflow, "
+        "such as build-macos.yml, without the .github/workflows/ folder.\n\n"
+        "It must exist on both the default branch and the selected branch, "
+        "be enabled, and support workflow_dispatch. Choose a release workflow; "
+        "build-macos-check.yml only validates builds and does not publish releases."
+    ),
+    "tag_input": (
+        "Enter the workflow_dispatch input name that receives the release tag. "
+        "The default is tag. Both workflows must accept the same input name.\n\n"
+        "Leave this blank if both workflows accept no inputs and build using the dispatched Git ref. "
+        "The workflow is always dispatched against the release tag."
+    ),
+}
+
 
 class HelpTooltip:
     """Hover or focus the help button; Escape dismisses the instructions."""
@@ -188,14 +231,16 @@ class ReleaseApp:
             ("tag_input", "Tag input name", "tag"),
         ]
         self.entries = []
+        self.help_buttons = {}
+        self.help_tooltips = {}
         for row, (key, label, default) in enumerate(fields, 2):
             label_frame = ttk.Frame(frame)
             label_frame.grid(row=row, column=0, sticky="w", padx=(0, 18), pady=6)
             ttk.Label(label_frame, text=label).pack(side="left")
-            if key == "ref":
-                self.branch_help_button = ttk.Button(label_frame, text="i", width=2, style="Help.TButton", takefocus=True)
-                self.branch_help_button.pack(side="left", padx=(7, 0))
-                self.branch_help = HelpTooltip(self.branch_help_button, REMOTE_BRANCH_HELP)
+            help_button = ttk.Button(label_frame, text="i", width=2, style="Help.TButton", takefocus=True)
+            help_button.pack(side="left", padx=(7, 0))
+            self.help_buttons[key] = help_button
+            self.help_tooltips[key] = HelpTooltip(help_button, FIELD_HELP[key])
             variable = tk.StringVar(value=default)
             self.inputs[key] = variable
             entry = ttk.Entry(frame, textvariable=variable, show="•" if key == "token" else "")
