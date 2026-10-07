@@ -38,7 +38,7 @@
     <h1>GitHub Release Tool</h1>
     <p class="intro">Create a release tag and start Windows and macOS build workflows from one form. Your GitHub workflows build the app and publish its release files.</p>
     <nav aria-label="Guide sections">
-      <a href="#start">Get started</a><a href="#setup">Repository setup</a><a href="#token">API token</a><a href="#fields">Form fields</a><a href="#example">Example</a><a href="#results">Results &amp; retries</a><a href="#troubleshooting">Troubleshooting</a>
+      <a href="#start">Get started</a><a href="#setup">Repository setup</a><a href="#prerequisites">Release checklist</a><a href="#token">API token</a><a href="#fields">Form fields</a><a href="#example">Example</a><a href="#results">Results &amp; retries</a><a href="#troubleshooting">Troubleshooting</a>
     </nav>
   </header>
   <main>
@@ -66,6 +66,16 @@
         <li>The workflows must build the tag and create or update its GitHub Release. Their settings control test gates, packaging, signing, draft releases and prereleases.</li>
         <li>Commit and push the app's version changes and release code before using this tool.</li>
       </ul>
+      <h3 id="prerequisites">Before every release</h3>
+      <ol>
+        <li><strong>Publish both workflow files.</strong> Verify the exact filenames on GitHub under <code>.github/workflows/</code>, on both the default branch (usually <code>main</code>) and your release branch. A local file alone is not enough. Use those exact filenames in Workflow settings; <code>build-macos.yml</code> and <code>macos-release.yml</code> are different names.</li>
+        <li><strong>Enable and register the workflows.</strong> Both must appear in GitHub Actions and support <code>workflow_dispatch</code>. A 404 for <code>actions/workflows/release-windows.yml</code> can mean the Windows workflow has not been published or the token cannot access it.</li>
+        <li><strong>Align the tag and app version.</strong> For a release tagged <code>v1.0.0</code>, set the app version to <code>1.0.0</code> when required by your workflow. For a Tauri app, keep <code>package.json</code>, <code>src-tauri/tauri.conf.json</code> and <code>src-tauri/Cargo.toml</code> aligned. Update the app entries in <code>package-lock.json</code> and <code>Cargo.lock</code> as applicable. A branch name does not change the app version.</li>
+        <li><strong>Complete the release metadata.</strong> Add the new version's release notes or “What's New” entry and update any release-candidate checks required by the app. Run the repository's required release tests before publishing.</li>
+        <li><strong>Commit and push the prepared release branch.</strong> Choose that branch in the tool, for example <code>release-1.0.0</code>, with tag <code>v1.0.0</code>. The default branch can retain its own version; select the branch with the intended release version.</li>
+        <li><strong>Check token access and the tag.</strong> Confirm the token can read the target repository and dispatch both workflows. Use a new tag, or an existing tag pointing to the same commit. After adding prerequisites, an older tag may point to a commit that lacks them; choose a new release tag and matching app version for the updated commit. Rerunning an older tag does not include later changes. The tool never moves tags.</li>
+      </ol>
+      <p>These are changes to the <strong>app repository</strong>. Editing the tool's form cannot publish missing workflows, bump an app version or add release notes.</p>
       <div class="note">The tool currently requires <strong>both Windows and macOS workflows</strong>. It does not install workflows, bump app versions, commit files or push local changes.</div>
       <p style="margin-top:16px">Workflow setup reference: <a href="https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow">GitHub: manually running a workflow</a>.</p>
     </section>
@@ -145,6 +155,8 @@ Tag input name:    tag</code></pre>
       <p>Check the Git tag and the workflows' input names. Both workflows must accept the tag input you selected. If the tag was created but dispatch failed, it remains available for retry.</p>
       <h3>Tag points to a different commit</h3>
       <p>The branch may have advanced since the tag was created. Use a new tag for the new commit, or select a remote branch still pointing to the original tagged commit. You can rerun an existing failed build directly in GitHub Actions.</p>
+      <h3>The build reports a version mismatch or missing release notes</h3>
+      <p>Use the release checklist above. Match the tag to the selected branch's app version, update all relevant manifests and lockfiles, and add the new release notes and release-candidate metadata. Commit and push those changes before tagging. Changing the tag text in this tool does not change the app's version.</p>
       <h3>The request succeeded, but the build failed</h3>
       <p>Open the failed run in GitHub Actions and inspect its job logs. Build dependencies, test failures, signing secrets and packaging are controlled by the app's workflows.</p>
       <h3>PowerShell says the release script does not exist</h3>

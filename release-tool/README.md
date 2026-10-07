@@ -63,6 +63,30 @@ For example, `release-windows.yml` and `build-macos.yml` can both accept a
 `tag` input. Choose workflows that publish release assets. A build-check workflow
 that only uploads test artifacts will not publish a release.
 
+## Release prerequisites
+
+Before clicking **Build release**:
+
+1. Commit and push both release workflow files under `.github/workflows/` to the
+   app repository's default branch and selected release branch. Local files alone
+   do not register a workflow on GitHub. Use the exact published filenames in the UI.
+2. Confirm both workflows are enabled in GitHub Actions, support `workflow_dispatch`,
+   and accept the selected tag input name (or no inputs when that field is blank).
+3. Where the workflow requires matching versions, align the release tag and app
+   version: `v1.0.0` corresponds to `1.0.0`. For Tauri, update `package.json`,
+   `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and the app version entries
+   in `package-lock.json` and `Cargo.lock`. Naming a branch does not bump its version.
+4. Add the new release notes/What's New entry, update any release-candidate checks,
+   and pass the app repository's required release tests.
+5. Commit and push the prepared release branch, then select it in the UI. The default
+   branch may still have an older app version; select the branch you intend to release.
+6. Verify token access and use a new tag, or an existing tag at the same commit.
+   A tag created before these prerequisites were committed will not include them.
+
+The tool does not install workflows, update versions or write release notes.
+The **Help & setup** page includes this checklist and troubleshooting for missing
+workflows, version mismatches and release metadata failures.
+
 GitHub's requirement for workflows on the default branch is documented in
 [Manually running a workflow](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
 
