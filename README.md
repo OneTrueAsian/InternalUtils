@@ -1,5 +1,11 @@
 # Util Scripts
 
+## GitHub Release Tool
+
+A Python desktop UI that uses PowerShell to tag a remote commit and start Windows and macOS GitHub build/release workflows. Enter your repository, API token and release tag, then follow the build links. No pip packages required.
+
+Launch: `python .\release-tool\ReleaseTool.pyw`. See [setup, token permissions and usage](release-tool/README.md).
+
 
 # VideoTranscribe
 
