@@ -72,7 +72,7 @@ FIELD_HELP = {
 
 
 class HelpTooltip:
-    """Hover or focus the help button; Escape dismisses the instructions."""
+    """Hover or activate the help button; keyboard focus alone does not open it."""
     def __init__(self, widget: ttk.Button, text: str):
         self.widget = widget
         self.text = text
@@ -80,7 +80,7 @@ class HelpTooltip:
         self.pending: str | None = None
         widget.bind("<Enter>", self.schedule)
         widget.bind("<Leave>", self.hide)
-        widget.bind("<FocusIn>", self.schedule)
+        widget.bind("<Return>", lambda _event: self.show())
         widget.bind("<FocusOut>", self.hide)
         widget.bind("<Escape>", self.hide)
         widget.bind("<Destroy>", self.hide)

@@ -10,7 +10,7 @@ GitHub, and your workflows publish the release assets.
 - Live target summary and individual Windows/macOS build status through completion.
 - Inline validation errors, scrollable activity log, clickable run links and log copying.
 - Token visibility toggle that resets when starting, with no saved credentials.
-- Hover/focus help for every field and a bundled offline user guide.
+- Hover/click help for every field, with keyboard activation and a bundled offline user guide.
 - Configurable repository, branch, tag, workflow filenames and shared tag input name.
 - Resume an existing tag at the same commit, without overwriting other tags.
 

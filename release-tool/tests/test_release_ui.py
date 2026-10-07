@@ -204,6 +204,31 @@ class ReleaseTests(unittest.TestCase):
             root.destroy()
 
 
+    def test_help_does_not_open_when_focus_moves_to_icon(self):
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            app = release_ui.ReleaseApp(root)
+            button = app.help_buttons["repository"]
+            tooltip = app.help_tooltips["repository"]
+            button.event_generate("<FocusIn>")
+            root.after(350, root.quit)
+            root.mainloop()
+            self.assertIsNone(tooltip.pending)
+            self.assertIsNone(tooltip.window)
+            button.invoke()
+            self.assertIsNotNone(tooltip.window)
+            tooltip.hide()
+            button.event_generate("<Enter>")
+            root.after(350, root.quit)
+            root.mainloop()
+            self.assertIsNotNone(tooltip.window)
+            button.event_generate("<Leave>")
+            self.assertIsNone(tooltip.window)
+        finally:
+            root.destroy()
+
+
 
 if __name__ == "__main__":
     unittest.main()
