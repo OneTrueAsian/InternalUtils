@@ -19,7 +19,7 @@ HELP_PAGE = Path(__file__).with_name("help.html")
 
 REMOTE_BRANCH_HELP = (
     "Choose the remote branch containing the code you want to release.\n\n"
-    "For example: branch release-1.3.0 with tag v1.3.0. "
+    "For example: branch release-1.0.0 with tag v1.0.0. "
     "Use main only if its code is ready to release.\n\n"
     "A blank branch uses the repository's default branch. "
     "The tool tags the latest commit already pushed to GitHub; local changes are not included.\n\n"
@@ -29,12 +29,12 @@ REMOTE_BRANCH_HELP = (
 FIELD_HELP = {
     "repository": (
         "Enter the GitHub repository you want to build, in owner/repo format.\n\n"
-        "Example: OneTrueAsian/vault-spend. This is the app repository, "
+        "Example: your-username/your-app. This is the app repository, "
         "not the InternalUtils repository hosting this tool."
     ),
     "ref": REMOTE_BRANCH_HELP,
     "tag": (
-        "Enter the release tag to create, such as v1.3.0. "
+        "Enter the release tag to create, such as v1.0.0. "
         "The tag will point to the selected remote branch's latest pushed commit.\n\n"
         "Commit and push any app version changes first; this tool does not update versions. "
         "An existing tag can be reused only when it points to the same commit. "
@@ -99,7 +99,7 @@ class HelpTooltip:
         self.window.overrideredirect(True)
         self.window.attributes("-topmost", True)
         tk.Label(self.window, text=self.text, wraplength=360, justify="left",
-                 bg="#1e293b", fg="#e2e8f0", font=("Segoe UI", 10),
+                 bg="#fffdf4", fg="#30352e", font=("Segoe UI", 10),
                  padx=14, pady=12, relief="solid", borderwidth=1).pack()
         self.window.update_idletasks()
         width, height = self.window.winfo_reqwidth(), self.window.winfo_reqheight()
@@ -201,78 +201,186 @@ class ReleaseApp:
         self.running = False
         self.inputs: dict[str, tk.StringVar] = {}
         self.links: list[str] = []
-        root.title("GitHub Release Tool")
-        root.geometry("780x810")
-        root.minsize(680, 730)
-        root.configure(bg="#0f172a")
-        style = ttk.Style(root)
-        style.theme_use("clam")
-        style.configure("TFrame", background="#0f172a")
-        style.configure("TLabel", background="#0f172a", foreground="#e2e8f0", font=("Segoe UI", 10))
-        style.configure("Title.TLabel", font=("Segoe UI", 23, "bold"), foreground="#ffffff")
-        style.configure("Hint.TLabel", foreground="#94a3b8", font=("Segoe UI", 9))
-        style.configure("TEntry", fieldbackground="#1e293b", foreground="#ffffff", insertcolor="#ffffff", padding=8)
-        style.configure("TButton", background="#334155", foreground="#ffffff", padding=9, font=("Segoe UI", 10))
-        style.map("TButton", background=[("active", "#475569"), ("disabled", "#1e293b")])
-        style.configure("Start.TButton", background="#2563eb", font=("Segoe UI", 11, "bold"))
-        style.configure("Help.TButton", padding=1, font=("Segoe UI", 10, "bold"), foreground="#93c5fd")
-        style.map("Start.TButton", background=[("active", "#1d4ed8"), ("disabled", "#334155")])
-        frame = ttk.Frame(root, padding=26)
-        frame.pack(fill="both", expand=True)
-        frame.columnconfigure(1, weight=1)
-        ttk.Label(frame, text="Build & release", style="Title.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Label(frame, text="Start Windows and macOS builds on GitHub.", style="Hint.TLabel").grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 20))
-        fields = [
-            ("repository", "Repository", "OneTrueAsian/vault-spend"),
-            ("ref", "Remote branch", ""),
-            ("tag", "Release tag", ""),
-            ("token", "GitHub API token", ""),
-            ("windows_workflow", "Windows workflow", "release-windows.yml"),
-            ("mac_workflow", "macOS workflow", "build-macos.yml"),
-            ("tag_input", "Tag input name", "tag"),
-        ]
         self.entries = []
         self.help_buttons = {}
         self.help_tooltips = {}
-        for row, (key, label, default) in enumerate(fields, 2):
-            label_frame = ttk.Frame(frame)
-            label_frame.grid(row=row, column=0, sticky="w", padx=(0, 18), pady=6)
-            ttk.Label(label_frame, text=label).pack(side="left")
-            help_button = ttk.Button(label_frame, text="i", width=2, style="Help.TButton", takefocus=True)
-            help_button.pack(side="left", padx=(7, 0))
-            self.help_buttons[key] = help_button
-            self.help_tooltips[key] = HelpTooltip(help_button, FIELD_HELP[key])
-            variable = tk.StringVar(value=default)
-            self.inputs[key] = variable
-            entry = ttk.Entry(frame, textvariable=variable, show="•" if key == "token" else "")
-            entry.grid(row=row, column=1, sticky="ew", pady=6)
-            self.entries.append(entry)
-        ttk.Label(frame, text="Blank branch uses the repo default. Token is kept only in memory.\nWorkflows must accept manual runs; leave tag input blank if they use the ref.",
-                  style="Hint.TLabel", wraplength=690).grid(row=9, column=0, columnspan=2, sticky="w", pady=(8, 14))
-        self.start_button = ttk.Button(frame, text="Start release builds", style="Start.TButton", command=self.start)
-        self.start_button.grid(row=10, column=0, columnspan=2, sticky="ew")
-        self.progress = ttk.Progressbar(frame, mode="indeterminate")
-        self.progress.grid(row=11, column=0, columnspan=2, sticky="ew", pady=(12, 8))
-        self.status = tk.StringVar(value="Ready")
-        ttk.Label(frame, textvariable=self.status).grid(row=12, column=0, columnspan=2, sticky="w", pady=(0, 8))
-        frame.rowconfigure(13, weight=1)
-        self.log = tk.Text(frame, height=8, bg="#020617", fg="#cbd5e1", relief="flat", wrap="word", font=("Consolas", 10), state="disabled", padx=12, pady=12)
-        self.log.grid(row=13, column=0, columnspan=2, sticky="nsew")
-        actions = ttk.Frame(frame)
-        actions.grid(row=14, column=0, columnspan=2, sticky="ew", pady=(12, 0))
-        self.actions_button = ttk.Button(actions, text="Open GitHub Actions", command=self.open_actions, state="disabled")
-        self.actions_button.pack(side="left")
-        self.release_button = ttk.Button(actions, text="Open release", command=self.open_release, state="disabled")
-        self.release_button.pack(side="left", padx=8)
-        self.help_button = ttk.Button(actions, text="Help", command=self.open_help)
+        root.title("Release Tool")
+        root.geometry("1000x840")
+        root.minsize(860, 760)
+        root.configure(bg="#f3f2ee")
+        style = ttk.Style(root)
+        style.theme_use("clam")
+        style.configure("TFrame", background="#f3f2ee")
+        style.configure("Paper.TFrame", background="#ffffff")
+        style.configure("TLabel", background="#f3f2ee", foreground="#252724", font=("Segoe UI", 10))
+        style.configure("Paper.TLabel", background="#ffffff")
+        style.configure("Title.TLabel", font=("Segoe UI", 18, "bold"))
+        style.configure("Heading.TLabel", background="#ffffff", font=("Segoe UI", 11, "bold"))
+        style.configure("Hint.TLabel", foreground="#62665f", font=("Segoe UI", 9))
+        style.configure("PaperHint.TLabel", background="#ffffff", foreground="#62665f", font=("Segoe UI", 9))
+        style.configure("TEntry", fieldbackground="#ffffff", foreground="#252724", insertcolor="#252724", padding=7, bordercolor="#c7c9c1", lightcolor="#ffffff", darkcolor="#ffffff")
+        style.map("TEntry", bordercolor=[("focus", "#427654")], fieldbackground=[("disabled", "#eeeeea")])
+        style.configure("TButton", background="#eeeee9", foreground="#30352e", bordercolor="#c7c9c1", lightcolor="#eeeee9", darkcolor="#eeeee9", padding=(12, 6), font=("Segoe UI", 9))
+        style.map("TButton", background=[("active", "#e2e4db")], foreground=[("disabled", "#888d83")])
+        style.configure("Start.TButton", background="#326346", foreground="#ffffff", bordercolor="#326346", lightcolor="#326346", darkcolor="#326346", font=("Segoe UI", 10, "bold"), padding=(18, 8))
+        style.map("Start.TButton", background=[("disabled", "#e4e7df"), ("active", "#254e36")], foreground=[("disabled", "#72776c")])
+        style.configure("Help.TButton", padding=0, borderwidth=0, background="#ffffff", foreground="#666c61", font=("Segoe UI", 9, "bold"))
+        style.map("Help.TButton", background=[("active", "#e9eee5")])
+        style.configure("TNotebook", background="#f3f2ee", borderwidth=0)
+        style.configure("TNotebook.Tab", padding=(18, 8), background="#e5e6df", foreground="#555c50")
+        style.map("TNotebook.Tab", background=[("selected", "#ffffff")], foreground=[("selected", "#252724")])
+        style.configure("TCheckbutton", background="#ffffff", foreground="#4d5548", font=("Segoe UI", 9))
+        style.configure("Horizontal.TProgressbar", background="#427654", troughcolor="#e9ebe4", borderwidth=0)
+
+        toolbar = ttk.Frame(root, padding=(24, 16))
+        toolbar.pack(fill="x")
+        ttk.Label(toolbar, text="Release Tool", style="Title.TLabel").pack(side="left")
+        self.help_button = ttk.Button(toolbar, text="Help & setup", command=self.open_help)
         self.help_button.pack(side="right")
-        ttk.Label(frame, text="Only code already on GitHub is built. Publication follows your workflows' settings.", style="Hint.TLabel", wraplength=690).grid(row=15, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        ttk.Label(toolbar, text="GITHUB  /  WINDOWS + macOS", style="Hint.TLabel").pack(side="right", padx=18)
+        ttk.Separator(root).pack(fill="x")
+
+        body = ttk.Frame(root, padding=(24, 18))
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(1, minsize=245)
+        body.rowconfigure(3, weight=1)
+        self.tabs = ttk.Notebook(body)
+        self.tabs.grid(row=0, column=0, sticky="nsew", padx=(0, 18))
+        details = ttk.Frame(self.tabs, style="Paper.TFrame", padding=20)
+        settings = ttk.Frame(self.tabs, style="Paper.TFrame", padding=20)
+        self.tabs.add(details, text="Release details")
+        self.tabs.add(settings, text="Workflow settings")
+        details.columnconfigure(0, weight=1)
+        settings.columnconfigure(0, weight=1)
+        ttk.Label(details, text="Choose what to release", style="Heading.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(details, text="Use a branch already pushed to GitHub.", style="PaperHint.TLabel").grid(row=1, column=0, sticky="w", pady=(3, 12))
+        self.add_field(details, 2, "repository", "Repository", "", "owner/app-repo")
+        branch_tag = ttk.Frame(details, style="Paper.TFrame")
+        branch_tag.grid(row=3, column=0, sticky="ew", pady=(0, 8))
+        branch_tag.columnconfigure(0, weight=1)
+        branch_tag.columnconfigure(1, weight=1)
+        branch = ttk.Frame(branch_tag, style="Paper.TFrame")
+        branch.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        tag = ttk.Frame(branch_tag, style="Paper.TFrame")
+        tag.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        branch.columnconfigure(0, weight=1)
+        tag.columnconfigure(0, weight=1)
+        self.add_field(branch, 0, "ref", "Remote branch", "", "Blank uses the default branch")
+        self.add_field(tag, 0, "tag", "Release tag", "", "Example: v1.0.0")
+        self.add_field(details, 4, "token", "GitHub API token", "", "Token cleared when the request starts")
+        self.show_token = tk.BooleanVar(value=False)
+        self.token_toggle = ttk.Checkbutton(details, text="Show token", variable=self.show_token, command=self.toggle_token)
+        self.token_toggle.grid(row=5, column=0, sticky="e", pady=(0, 6))
+        ttk.Label(details, text="Workflows and app versions must already be committed.", style="PaperHint.TLabel").grid(row=6, column=0, sticky="w", pady=(8, 0))
+
+        ttk.Label(settings, text="Connect your release workflows", style="Heading.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(settings, text="Files live in the app's .github/workflows folder.", style="PaperHint.TLabel").grid(row=1, column=0, sticky="w", pady=(3, 12))
+        self.add_field(settings, 2, "windows_workflow", "Windows workflow", "release-windows.yml", "Filename only")
+        self.add_field(settings, 3, "mac_workflow", "macOS workflow", "build-macos.yml", "Choose the workflow that publishes a release")
+        self.add_field(settings, 4, "tag_input", "Tag input name", "tag", "Leave blank if both workflows use the Git ref")
+        ttk.Label(settings, text="Both workflows need an enabled manual trigger.\nUse Help & setup for token permissions and setup instructions.", style="PaperHint.TLabel").grid(row=5, column=0, sticky="w", pady=(10, 0))
+
+        preview = ttk.Frame(body, style="Paper.TFrame", padding=18)
+        preview.grid(row=0, column=1, sticky="nsew")
+        self.summary = {}
+        ttk.Label(preview, text="Release target", style="Heading.TLabel").pack(anchor="w", pady=(0, 14))
+        for key, label in [("repository", "REPOSITORY"), ("ref", "SOURCE BRANCH"), ("tag", "TAG")]:
+            ttk.Label(preview, text=label, style="PaperHint.TLabel").pack(anchor="w")
+            variable = tk.StringVar()
+            self.summary[key] = variable
+            ttk.Label(preview, textvariable=variable, style="Paper.TLabel", wraplength=210).pack(anchor="w", pady=(2, 12))
+        ttk.Separator(preview).pack(fill="x", pady=(0, 12))
+        ttk.Label(preview, text="Requested builds", style="Heading.TLabel").pack(anchor="w", pady=(0, 8))
+        self.platform_status = {}
+        for platform in ("Windows", "macOS"):
+            variable = tk.StringVar(value=f"{platform}  ·  Not requested")
+            self.platform_status[platform] = variable
+            ttk.Label(preview, textvariable=variable, style="Paper.TLabel", wraplength=210).pack(anchor="w", pady=4)
+        ttk.Label(preview, text="Build results appear on GitHub.\nThis panel tracks dispatch requests.", style="PaperHint.TLabel").pack(anchor="w", pady=(12, 0))
+
+        action_row = ttk.Frame(body)
+        action_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(16, 12))
+        self.start_button = ttk.Button(action_row, text="Build release", style="Start.TButton", command=self.start)
+        self.start_button.pack(side="left")
+        self.actions_button = ttk.Button(action_row, text="View builds", command=self.open_actions, state="disabled")
+        self.actions_button.pack(side="left", padx=(10, 8))
+        self.release_button = ttk.Button(action_row, text="View release", command=self.open_release, state="disabled")
+        self.release_button.pack(side="left")
+        self.status = tk.StringVar(value="Ready to prepare a release")
+        self.status_label = ttk.Label(action_row, textvariable=self.status, style="Hint.TLabel", wraplength=220)
+        self.status_label.pack(side="right")
+
+        log_header = ttk.Frame(body)
+        log_header.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        ttk.Label(log_header, text="Activity", font=("Segoe UI", 10, "bold")).pack(side="left")
+        self.copy_button = ttk.Button(log_header, text="Copy log", command=self.copy_log)
+        self.copy_button.pack(side="right")
+        log_frame = ttk.Frame(body, style="Paper.TFrame")
+        log_frame.grid(row=3, column=0, columnspan=2, sticky="nsew")
+        self.log = tk.Text(log_frame, height=6, bg="#ffffff", fg="#333b31", relief="solid", borderwidth=1, highlightthickness=0, wrap="word", font=("Consolas", 10), state="disabled", padx=12, pady=10)
+        self.log.pack(side="left", fill="both", expand=True)
+        scrollbar = ttk.Scrollbar(log_frame, command=self.log.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.log.configure(yscrollcommand=scrollbar.set)
+        self.log.tag_configure("error", foreground="#a13226")
+        self.log.tag_configure("success", foreground="#326346")
+        self.progress = ttk.Progressbar(body, mode="indeterminate")
+        self.progress.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        self.progress.grid_remove()
+        ttk.Label(body, text="Only pushed code is built. Your workflows decide when the release is published.", style="Hint.TLabel").grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.append_log("Choose a repository, branch and tag, then enter your token.\nWorkflow filenames can be changed in Workflow settings.")
+        for key in ("repository", "ref", "tag", "windows_workflow", "mac_workflow", "tag_input"):
+            self.inputs[key].trace_add("write", self.update_summary)
+        self.update_summary()
+        self.entry_by_key["repository"].focus_set()
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.after(100, self.poll)
 
-    def append_log(self, message: str) -> None:
+    def add_field(self, parent, row, key, label, default, hint):
+        if not hasattr(self, "entry_by_key"):
+            self.entry_by_key = {}
+        field = ttk.Frame(parent, style="Paper.TFrame")
+        field.grid(row=row, column=0, sticky="ew", pady=(0, 10))
+        field.columnconfigure(0, weight=1)
+        heading = ttk.Frame(field, style="Paper.TFrame")
+        heading.grid(row=0, column=0, sticky="w", pady=(0, 5))
+        ttk.Label(heading, text=label, style="Paper.TLabel").pack(side="left")
+        button = ttk.Button(heading, text="i", width=2, style="Help.TButton", takefocus=True)
+        button.pack(side="left", padx=(6, 0))
+        self.help_buttons[key] = button
+        self.help_tooltips[key] = HelpTooltip(button, FIELD_HELP[key])
+        variable = tk.StringVar(value=default)
+        self.inputs[key] = variable
+        entry = ttk.Entry(field, textvariable=variable, show="•" if key == "token" else "", width=15)
+        entry.grid(row=1, column=0, sticky="ew")
+        self.entries.append(entry)
+        self.entry_by_key[key] = entry
+        ttk.Label(field, text=hint, style="PaperHint.TLabel").grid(row=2, column=0, sticky="w", pady=(3, 0))
+
+    def toggle_token(self):
+        self.entry_by_key["token"].configure(show="" if self.show_token.get() else "•")
+
+    def update_summary(self, *_args):
+        if self.running:
+            return
+        for key, fallback in [("repository", "No repository selected"), ("ref", "Repository default branch"), ("tag", "No tag entered")]:
+            self.summary[key].set(self.inputs[key].get().strip() or fallback)
+        if hasattr(self, "target_repo"):
+            for platform, variable in self.platform_status.items():
+                variable.set(f"{platform}  ·  Not requested")
+            self.actions_button.configure(state="disabled")
+            self.release_button.configure(state="disabled")
+            self.status.set("Ready to prepare a release")
+            self.status_label.configure(foreground="#62665f")
+
+    def copy_log(self):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self.log.get("1.0", "end-1c"))
+
+    def append_log(self, message: str, kind: str = "log") -> None:
         self.log.configure(state="normal")
-        self.log.insert("end", message + "\n")
+        self.log.insert("end", message + "\n", "error" if kind == "error" else "success" if kind == "done" else ())
         self.log.see("end")
         self.log.configure(state="disabled")
 
@@ -284,24 +392,54 @@ class ReleaseApp:
             validate_request(request)
             powershell_command()
         except (ValueError, RuntimeError) as exc:
-            messagebox.showerror("Check release details", str(exc), parent=self.root)
+            self.status.set("Check release details")
+            self.status_label.configure(foreground="#a13226")
+            self.append_log(str(exc), "error")
+            for key in ("repository", "tag", "token"):
+                if not self.inputs[key].get().strip():
+                    self.tabs.select(0)
+                    self.entry_by_key[key].focus_set()
+                    break
             return
         self.target_repo = request["repository"]
         self.target_tag = request["tag"]
         self.running = True
         self.inputs["token"].set("")
+        self.show_token.set(False)
+        self.toggle_token()
         self.links.clear()
         self.log.configure(state="normal")
         self.log.delete("1.0", "end")
         self.log.configure(state="disabled")
+        self.append_log(f"Release request: {self.target_repo} / {self.target_tag}")
+        for platform, variable in self.platform_status.items():
+            variable.set(f"{platform}  ·  Waiting")
         for entry in self.entries:
             entry.configure(state="disabled")
-        self.start_button.configure(state="disabled")
+        self.token_toggle.configure(state="disabled")
+        self.start_button.configure(state="disabled", text="Requesting…")
         self.actions_button.configure(state="normal")
         self.release_button.configure(state="normal")
+        self.progress.grid()
         self.progress.start(12)
-        self.status.set("Requesting release builds…")
+        self.status.set("Checking repository and workflows…")
+        self.status_label.configure(foreground="#62665f")
         threading.Thread(target=run_release, args=(request, self.events), daemon=True).start()
+
+    def update_platform(self, event):
+        message = str(event.get("message", ""))
+        for key, platform in [("windows_workflow", "Windows"), ("mac_workflow", "macOS")]:
+            if not message.startswith(self.inputs[key].get().strip() + ":"):
+                continue
+            if event["kind"] == "error":
+                text = "Request failed"
+            elif "already started" in message:
+                text = "Existing run found"
+            elif event["kind"] == "link":
+                text = "Build requested"
+            else:
+                continue
+            self.platform_status[platform].set(f"{platform}  ·  {text}")
 
     def poll(self) -> None:
         try:
@@ -310,20 +448,27 @@ class ReleaseApp:
                 if event["kind"] == "finished":
                     self.running = False
                     self.progress.stop()
+                    self.progress.grid_remove()
                     self.progress["value"] = 0
-                    self.start_button.configure(state="normal")
+                    self.start_button.configure(state="normal", text="Build release")
+                    self.token_toggle.configure(state="normal")
                     for entry in self.entries:
                         entry.configure(state="normal")
-                    self.status.set("Builds requested — follow GitHub for results" if event["success"] else "Request failed — see the log")
+                    self.status.set("Builds requested · view results on GitHub" if event["success"] else "Request failed · see activity below")
+                    self.status_label.configure(foreground="#326346" if event["success"] else "#a13226")
+                    for platform, variable in self.platform_status.items():
+                        if variable.get().endswith("Waiting"):
+                            variable.set(f"{platform}  ·  Status unavailable" if event["success"] else f"{platform}  ·  Not requested")
                 else:
-                    self.append_log(str(event.get("message", "")))
+                    self.update_platform(event)
+                    self.append_log(str(event.get("message", "")), event["kind"])
                     url = event.get("url", "")
                     if event["kind"] == "link" and urlparse(url).hostname == "github.com" and urlparse(url).scheme == "https":
                         tag = f"link{len(self.links)}"
                         self.links.append(url)
                         self.log.configure(state="normal")
                         self.log.insert("end", url + "\n", tag)
-                        self.log.tag_configure(tag, foreground="#60a5fa", underline=True)
+                        self.log.tag_configure(tag, foreground="#285f42", underline=True)
                         self.log.tag_bind(tag, "<Button-1>", lambda _, target=url: webbrowser.open(target))
                         self.log.configure(state="disabled")
                         self.log.see("end")

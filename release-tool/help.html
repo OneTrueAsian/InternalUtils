@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>GitHub Release Tool · User guide</title>
   <style>
-    :root { color-scheme: dark; --bg:#0f172a; --panel:#182337; --text:#e2e8f0; --muted:#a8b6cc; --line:#334155; --accent:#93c5fd; }
+    :root { color-scheme: light; --bg:#f3f2ee; --panel:#ffffff; --text:#252724; --muted:#62665f; --line:#d2d5cb; --accent:#326346; }
     * { box-sizing:border-box; }
     body { margin:0; background:var(--bg); color:var(--text); font:16px/1.65 system-ui, sans-serif; }
     header, main, footer { max-width:1000px; margin:auto; padding:32px 24px; }
@@ -18,15 +18,15 @@
     nav { display:flex; flex-wrap:wrap; gap:8px 22px; margin-top:24px; }
     a { color:var(--accent); text-underline-offset:3px; }
     a:focus-visible { outline:3px solid var(--accent); outline-offset:4px; }
-    section { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:28px; margin-bottom:24px; scroll-margin-top:20px; }
+    section { background:var(--panel); border:1px solid var(--line); border-radius:4px; padding:28px; margin-bottom:24px; scroll-margin-top:20px; }
     ul, ol { padding-left:24px; } li { margin:8px 0; }
-    code { background:#0b1324; padding:2px 6px; border-radius:4px; font-size:.9em; overflow-wrap:anywhere; }
-    pre { background:#0b1324; border-radius:8px; padding:16px; overflow-x:auto; } pre code { padding:0; }
+    code { background:#eeeee9; padding:2px 6px; border-radius:4px; font-size:.9em; overflow-wrap:anywhere; }
+    pre { background:#eeeee9; border-radius:8px; padding:16px; overflow-x:auto; } pre code { padding:0; }
     .table-scroll { overflow-x:auto; }
     table { border-collapse:collapse; width:100%; font-size:.95rem; }
     th, td { padding:13px 14px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top; }
     th { color:var(--accent); } td:first-child { width:24%; font-weight:600; }
-    .note { border-left:3px solid #60a5fa; padding:12px 16px; background:#10213d; border-radius:0 8px 8px 0; margin-top:18px; }
+    .note { border-left:3px solid #427654; padding:12px 16px; background:#edf2e9; border-radius:0 8px 8px 0; margin-top:18px; }
     footer { color:var(--muted); font-size:.9rem; padding-top:0; }
     @media (max-width:600px) { header,main,footer { padding-left:16px; padding-right:16px; } section { padding:20px; } th,td { padding:10px 8px; } }
     @media print { :root { color-scheme:light; --bg:white; --panel:white; --text:#111; --muted:#333; --line:#aaa; --accent:#164b89; } section { break-inside:avoid; } code,pre,.note { background:#eee; } nav { display:none; } }
@@ -48,10 +48,11 @@
       <ol>
         <li>Keep all files in the <code>release-tool</code> folder together.</li>
         <li>Double-click <code>ReleaseTool.pyw</code>, or run the command below from the InternalUtils repository.</li>
-        <li>Enter the repository, branch, tag, and API token. Check the two workflow filenames.</li>
-        <li>Click <strong>Start release builds</strong>. Follow the run links to check build progress.</li>
+        <li>Enter the repository, branch, tag, and API token on the Release details tab. Check the two workflow filenames and tag input name on the Workflow settings tab.</li>
+        <li>Click <strong>Build release</strong>. Follow the run links to check build progress.</li>
       </ol>
       <pre><code>python .\release-tool\ReleaseTool.pyw</code></pre>
+      <p>The release target panel updates as you enter your repository, branch and tag. It also shows request status for each platform. Use <strong>Show token</strong> to check your token when needed; it is hidden again and cleared when starting.</p>
       <p>Hover over an <strong>i</strong> icon beside a field for a quick explanation. You can also focus or click the icon. Press Escape to dismiss its instructions.</p>
     </section>
     <section id="setup">
@@ -115,15 +116,15 @@ GitHub API token:  [your token]
 Windows workflow:  release-windows.yml
 macOS workflow:    build-macos.yml
 Tag input name:    tag</code></pre>
-      <p>Click <strong>Start release builds</strong>. The tool checks the branch and workflows, creates or verifies <code>v1.0.0</code>, then requests both builds against that tag.</p>
+      <p>Click <strong>Build release</strong>. The tool checks the branch and workflows, creates or verifies <code>v1.0.0</code>, then requests both builds against that tag.</p>
     </section>
     <section id="results">
       <h2>Understand results and retries</h2>
       <ul>
         <li><strong>Builds requested</strong> means the workflow requests succeeded. It does not mean builds or publication finished.</li>
-        <li>Use the clickable build links or <strong>Open GitHub Actions</strong> to inspect build progress and failures.</li>
-        <li><strong>Open release</strong> opens the tag's release page. It may be absent until a workflow publishes it.</li>
-        <li>The UI log shows request failures and partial success. Logs currently remain in the UI and are not saved to disk.</li>
+        <li>Use the clickable build links or <strong>View builds</strong> to inspect build progress and failures.</li>
+        <li><strong>View release</strong> opens the tag's release page. It may be absent until a workflow publishes it.</li>
+        <li>The UI log shows request failures and partial success. Use <strong>Copy log</strong> to copy the redacted activity log. Logs remain in the UI and are not automatically saved to disk.</li>
         <li>If one request fails, the other is still attempted. The tag is retained. Enter your token again to retry with the same tag and its original branch commit.</li>
         <li>An existing tag can be reused only at the same commit. The tool never moves or deletes tags.</li>
         <li>Existing queued, running or successful runs for the same tag and commit are reused when found. Failed or cancelled runs can be requested again.</li>
@@ -150,6 +151,6 @@ Tag input name:    tag</code></pre>
       <p>Run <code>python .\release-tool\ReleaseTool.pyw</code> from a terminal to see startup errors. Check that Python includes Tkinter and that all tool files are together. PowerShell must also be available.</p>
     </section>
   </main>
-  <footer>This guide is bundled with the tool and can be read offline. GitHub links require an internet connection. <a href="#start">Back to get started</a></footer>
+  <footer>Open this guide using <strong>Help &amp; setup</strong> in the toolbar. This guide is bundled with the tool and can be read offline. GitHub links require an internet connection. <a href="#start">Back to get started</a></footer>
 </body>
 </html>

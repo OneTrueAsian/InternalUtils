@@ -84,6 +84,7 @@ class ReleaseTests(unittest.TestCase):
         root.withdraw()
         try:
             app = release_ui.ReleaseApp(root)
+            app.inputs["repository"].set("owner/repo")
             app.inputs["tag"].set("v1.2.3")
             app.inputs["token"].set("offline-secret")
             with patch.object(release_ui, "powershell_command", return_value=["powershell"]), patch.object(release_ui.threading, "Thread"):
@@ -104,13 +105,76 @@ class ReleaseTests(unittest.TestCase):
         root.attributes("-alpha", 0)
         try:
             app = release_ui.ReleaseApp(root)
-            root.geometry("680x730")
+            root.geometry("860x760")
             root.update()
             for control in [*app.entries, app.start_button, app.actions_button, app.release_button]:
                 bottom = control.winfo_rooty() - root.winfo_rooty() + control.winfo_height()
                 self.assertLessEqual(bottom, root.winfo_height(), str(control))
         finally:
             root.destroy()
+
+    def test_release_summary_and_settings_tab(self):
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            app = release_ui.ReleaseApp(root)
+            self.assertEqual(app.inputs["repository"].get(), "")
+            app.inputs["repository"].set("owner/another-app")
+            app.inputs["tag"].set("v2.0.0")
+            self.assertEqual(app.summary["repository"].get(), "owner/another-app")
+            self.assertEqual(app.summary["ref"].get(), "Repository default branch")
+            self.assertEqual(app.summary["tag"].get(), "v2.0.0")
+            self.assertEqual(app.tabs.index(app.tabs.select()), 0)
+            app.tabs.select(1)
+            self.assertEqual(app.tabs.index(app.tabs.select()), 1)
+            self.assertEqual(set(app.help_buttons), set(app.inputs))
+        finally:
+            root.destroy()
+
+    def test_partial_failure_keeps_platform_results_and_redacted_log(self):
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            app = release_ui.ReleaseApp(root)
+            app.inputs["repository"].set("owner/repo")
+            app.inputs["tag"].set("v1.2.3")
+            app.inputs["token"].set("offline-secret")
+            app.show_token.set(True)
+            app.toggle_token()
+            with patch.object(release_ui, "powershell_command", return_value=["powershell"]), patch.object(release_ui.threading, "Thread"):
+                app.start()
+            self.assertFalse(app.show_token.get())
+            self.assertEqual(app.entry_by_key["token"].cget("show"), "•")
+            app.events.put({"kind": "link", "message": "release-windows.yml: build requested", "url": "https://github.com/owner/repo/actions/runs/1"})
+            app.events.put({"kind": "error", "message": "build-macos.yml: access denied. Tag retained."})
+            app.events.put({"kind": "finished", "success": False})
+            app.poll()
+            self.assertEqual(app.platform_status["Windows"].get(), "Windows  ·  Build requested")
+            self.assertEqual(app.platform_status["macOS"].get(), "macOS  ·  Request failed")
+            self.assertIn("failed", app.status.get())
+            app.copy_log()
+            self.assertIn("Tag retained", root.clipboard_get())
+            self.assertNotIn("offline-secret", root.clipboard_get())
+            app.inputs["repository"].set("owner/new-app")
+            self.assertIn("Not requested", app.platform_status["Windows"].get())
+            self.assertTrue(app.actions_button.instate(["disabled"]))
+        finally:
+            root.destroy()
+
+    def test_invalid_form_reports_inline_without_starting_worker(self):
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            app = release_ui.ReleaseApp(root)
+            with patch.object(release_ui.threading, "Thread") as worker:
+                app.start()
+            worker.assert_not_called()
+            self.assertFalse(app.running)
+            self.assertIn("Check release details", app.status.get())
+            self.assertIn("Enter your GitHub API token", app.log.get("1.0", "end"))
+        finally:
+            root.destroy()
+
 
 
 if __name__ == "__main__":

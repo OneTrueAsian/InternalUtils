@@ -17,12 +17,15 @@ python .\release-tool\ReleaseTool.pyw
 ```
 
 Enter the target `owner/repo`, remote branch, release tag, and GitHub API token.
-The defaults point at `OneTrueAsian/vault-spend`, `release-windows.yml`, and
-`build-macos.yml`. A blank branch uses the target repo's default branch. Workflow
-filenames are editable. Click **Start release builds**; follow the clickable run
-links or the **Open GitHub Actions** and **Open release** buttons.
+The repository field starts blank. A blank branch uses the target repo's default
+branch. The **Workflow settings** tab contains editable filenames, initially
+`release-windows.yml` and `build-macos.yml`, and the tag input name.
+Click **Build release**; follow the clickable run links or use **View builds**
+and **View release**. A live target summary lets you check the repository, branch
+and tag before starting. Windows and macOS statuses describe dispatch requests,
+not the eventual build results. **Copy log** copies the redacted activity log.
 
-Click **Help** in the UI to open the bundled [user guide](help.html) in your
+Click **Help & setup** in the toolbar to open the bundled [user guide](help.html) in your
 browser. It covers setup, token permissions, every form field, a release example,
 retries and troubleshooting. The guide also works offline.
 
