@@ -54,6 +54,16 @@ def load_profile(path):
         for command in commands:
             if not isinstance(command, list) or not command or not all(isinstance(arg, str) and arg for arg in command):
                 raise ReleaseError(f"{key} must contain command argument arrays, not shell strings.")
+    workflows = profile.setdefault("post_release_workflows", [])
+    if not isinstance(workflows, list) or not all(
+            isinstance(item, dict) and re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.-]*\.ya?ml", str(item.get("workflow", "")))
+            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", str(item.get("tag_input", ""))) for item in workflows):
+        raise ReleaseError("post_release_workflows must list objects with a workflow filename and a tag_input name.")
+    signed = profile.setdefault("signed_update_assets", [])
+    suffixes = profile.setdefault("signed_update_suffixes", [".manifest.json", ".signature.json"])
+    for key, value in (("signed_update_assets", signed), ("signed_update_suffixes", suffixes)):
+        if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+            raise ReleaseError(f"{key} must be a list of exact filename patterns.")
     if not isinstance(profile.get("required_tools", []), list) or not all(isinstance(tool, str) and tool for tool in profile.get("required_tools", [])):
         raise ReleaseError("required_tools must be a list of executable names.")
     if adapter == "custom":
@@ -285,6 +295,23 @@ def expected_assets(root, profile, product, version):
     return files, windows, mac
 
 
+def signed_update_files(profile, product, version):
+    values = dict(product=product, version=version, architecture=profile.get("architecture", "x64"))
+    names = [pattern.format(**values).replace(" ", ".") for pattern in profile["signed_update_assets"]]
+    return [name + suffix for name in names for suffix in profile["signed_update_suffixes"]]
+
+
+def check_dispatch_workflow(runner, root, repository, filename, label):
+    try:
+        workflow = inside(root, ".github/workflows/" + filename).read_text(encoding="utf-8")
+    except OSError:
+        raise ReleaseError(f"{label} workflow file .github/workflows/{filename} was not found in the application repository.") from None
+    if not re.search(r"(?m)^\s*workflow_dispatch\s*:", workflow) or re.search(r"(?m)^\s+push\s*:", workflow):
+        raise ReleaseError(f"{label} publishing must be manual-only workflow_dispatch.")
+    if runner.api(repository, "actions/workflows/" + filename).get("state") != "active":
+        raise ReleaseError(f"{label} workflow must be registered and enabled on the default branch.")
+
+
 def verify_release(runner, repository, tag, sha, expected, latest=False):
     release = runner.api(repository, "releases/tags/" + quote(tag, safe=""))
     if release.get("draft") or release.get("prerelease") or release.get("tag_name") != tag:
@@ -399,11 +426,9 @@ def local_pipeline(request, events, stop=None, runner_factory=Runner, monitor=mo
             check_versions(root, profile, version)
             if full:
                 if profile["mac_assets"]:
-                    workflow = inside(root, ".github/workflows/" + request["mac_workflow"]).read_text(encoding="utf-8")
-                    if not re.search(r"(?m)^\s*workflow_dispatch\s*:", workflow) or re.search(r"(?m)^\s+push\s*:", workflow):
-                        raise ReleaseError("macOS publishing must be manual-only workflow_dispatch.")
-                    if runner.api(repository, "actions/workflows/" + request["mac_workflow"]).get("state") != "active":
-                        raise ReleaseError("macOS workflow must be registered and enabled on the default branch.")
+                    check_dispatch_workflow(runner, root, repository, request["mac_workflow"], "macOS")
+                for item in profile["post_release_workflows"]:
+                    check_dispatch_workflow(runner, root, repository, item["workflow"], item["workflow"])
                 changed = set(runner.text(["git", "diff", "HEAD", "--name-only"]).splitlines())
                 if changed - set(release_files):
                     raise ReleaseError("Preparation changed files outside the profile's release files: " + ", ".join(sorted(changed - set(release_files))))
@@ -472,26 +497,30 @@ def local_pipeline(request, events, stop=None, runner_factory=Runner, monitor=mo
             verify_release(runner, repository, tag, sha, windows)
             runner.emit("status", "Windows: installers published", workflow=request.get("windows_workflow", "release-windows.yml"), state="completed", conclusion="success")
             runner.emit("link", "Release page", url=f"https://github.com/{repository}/releases/tag/{tag}")
-            if full and mac:
-                query = f"actions/workflows/{request['mac_workflow']}/runs?head_sha={sha}&per_page=100"
-                previous_ids = [run["id"] for run in runner.api(repository, query).get("workflow_runs", [])]
-                requested_at = datetime.now(timezone.utc).isoformat()
-                result = runner.api(repository, f"actions/workflows/{request['mac_workflow']}/dispatches", dict(ref=tag, inputs={request["tag_input"]: tag}))
-                run = dict(workflow=request["mac_workflow"], head_sha=sha, tag=tag, requested_at=requested_at,
-                           previous_run_ids=previous_ids, run_id=result.get("workflow_run_id"), url=result.get("html_url", ""))
-                runner.emit("link", "macOS: build requested", url=run["url"])
-                if not monitor(repository, token, [run], events, stop=runner.stop):
-                    if run.get("run_id"):
-                        runner.emit("log", f"To diagnose: gh run view {run['run_id']} --repo {repository} --log-failed. For a temporary failure: gh run rerun {run['run_id']} --repo {repository} --failed.")
-                    raise ReleaseError("macOS build did not complete successfully. Windows assets remain published; no release was withdrawn.")
+            dispatches = ([(request["mac_workflow"], request["tag_input"], "macOS")] if mac else []) + [(item["workflow"], item["tag_input"], item["workflow"]) for item in profile["post_release_workflows"]]
+            if full and dispatches:
+                runs = []
+                for workflow, tag_input, label in dispatches:
+                    query = f"actions/workflows/{workflow}/runs?head_sha={sha}&per_page=100"
+                    previous_ids = [run["id"] for run in runner.api(repository, query).get("workflow_runs", [])]
+                    requested_at = datetime.now(timezone.utc).isoformat()
+                    result = runner.api(repository, f"actions/workflows/{workflow}/dispatches", dict(ref=tag, inputs={tag_input: tag}))
+                    runs.append(dict(workflow=workflow, head_sha=sha, tag=tag, requested_at=requested_at,
+                                     previous_run_ids=previous_ids, run_id=result.get("workflow_run_id"), url=result.get("html_url", "")))
+                    runner.emit("link", f"{label}: build requested", url=runs[-1]["url"])
+                if not monitor(repository, token, runs, events, stop=runner.stop):
+                    for run in runs:
+                        if run.get("run_id"):
+                            runner.emit("log", f"To diagnose: gh run view {run['run_id']} --repo {repository} --log-failed. For a temporary failure: gh run rerun {run['run_id']} --repo {repository} --failed.")
+                    raise ReleaseError("A GitHub release build did not complete successfully. Windows assets remain published; no release was withdrawn.")
             if full:
-                verify_release(runner, repository, tag, sha, windows + mac, latest=True)
+                verify_release(runner, repository, tag, sha, windows + mac + signed_update_files(profile, product, version), latest=True)
                 runner.run(["git", "fetch", "origin", "--tags"])
             if not full and restore:
                 tracked_changes(runner)
                 runner.run(restore, ignore_stop=True)
                 restore = None
-            runner.emit("done", f"Verified {tag} at {sha}: " + ", ".join(windows + mac if full else windows))
+            runner.emit("done", f"Verified {tag} at {sha}: " + ", ".join(windows + mac + signed_update_files(profile, product, version) if full else windows))
             return True
         finally:
             if full and "notes_path" in locals():

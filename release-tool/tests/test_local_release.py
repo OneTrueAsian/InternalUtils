@@ -26,6 +26,7 @@ class World:
         self.bad_origin = False
         self.mac_fail = False
         self.wrong_latest = False
+        self.signed_files = []
         self.runner = None
 
     def factory(self, root, token, events, stop):
@@ -98,6 +99,7 @@ class World:
             return False
         version = self.release['tag_name'][1:]
         self.release['assets'].extend([dict(name=f'Sample.App_{version}_universal.dmg', size=10),dict(name='Sample.App_universal.app.tar.gz', size=10)])
+        self.release['assets'].extend(dict(name=name, size=10) for name in self.signed_files)
         return True
 
 
@@ -268,6 +270,67 @@ class LocalPipelineTests(unittest.TestCase):
             self.execute()
         self.assertEqual(len(self.world.release['assets']), 2)
         self.assertFalse(any('delete' in args for args in self.commands()))
+
+    SIGNING = dict(
+        post_release_workflows=[dict(workflow='release-windows.yml', tag_input='tag')],
+        signed_update_assets=['{product}_{version}_{architecture}-setup.exe', '{product}_{version}_{architecture}_en-US.msi'],
+        signed_update_suffixes=['.manifest.json', '.signature.json'],
+    )
+
+    def enable_signing(self, workflow=True):
+        profile = json.loads(self.profile.read_text())
+        profile.update(self.SIGNING)
+        self.profile.write_text(json.dumps(profile))
+        if workflow:
+            (self.root / '.github/workflows/release-windows.yml').write_text('on:\n  workflow_dispatch:\n    inputs:\n      tag:\n')
+        names = ['Sample.App_1.0.1_x64-setup.exe', 'Sample.App_1.0.1_x64_en-US.msi']
+        self.world.signed_files = [name + suffix for name in names for suffix in ('.manifest.json', '.signature.json')]
+
+    def test_post_release_workflow_is_dispatched_with_the_mac_build_and_signed_files_are_verified(self):
+        self.enable_signing()
+        self.assertTrue(self.execute())
+        dispatches = [args[1] for args, options in self.world.calls if args[0] == 'API' and args[1].endswith('/dispatches')]
+        self.assertEqual(dispatches, ['actions/workflows/build-macos.yml/dispatches', 'actions/workflows/release-windows.yml/dispatches'])
+        bodies = [options['body'] for args, options in self.world.calls if args[0] == 'API' and args[1].endswith('/dispatches')]
+        self.assertEqual(bodies, [dict(ref='v1.0.1', inputs={'tag': 'v1.0.1'})] * 2)
+        monitored = [options['runs'] for args, options in self.world.calls if args == ['MONITOR']]
+        self.assertEqual([[run['workflow'] for run in runs] for runs in monitored], [['build-macos.yml', 'release-windows.yml']])
+        self.assertEqual(len(self.world.release['assets']), 8)
+
+    def test_release_without_the_signed_update_files_is_not_reported_as_success(self):
+        self.enable_signing()
+        self.world.signed_files = self.world.signed_files[:2]
+        with self.assertRaisesRegex(local.ReleaseError, r'x64_en-US\.msi\.manifest\.json'):
+            self.execute()
+
+    def test_signed_files_are_not_required_when_the_profile_does_not_list_any(self):
+        self.assertTrue(self.execute())
+        self.assertEqual(len(self.world.release['assets']), 4)
+
+    def test_post_release_workflow_must_be_manual_only_and_present_before_the_build(self):
+        self.enable_signing(workflow=False)
+        with self.assertRaises(local.ReleaseError):
+            self.execute()
+        self.assertNotIn(['npx', 'tauri', 'build'], self.commands())
+        (self.root / '.github/workflows/release-windows.yml').write_text('on:\n  push:\n  workflow_dispatch:\n')
+        self.world = World(self.root)
+        self.enable_signing(workflow=False)
+        self.request['token'] = 'offline-secret'
+        with self.assertRaisesRegex(local.ReleaseError, 'manual-only'):
+            self.execute()
+        self.assertNotIn(['npx', 'tauri', 'build'], self.commands())
+
+    def test_signing_profile_keys_are_validated(self):
+        profile = json.loads(self.profile.read_text())
+        for key, bad in [('post_release_workflows', 'release-windows.yml'),
+                         ('post_release_workflows', [dict(workflow='../x.yml', tag_input='tag')]),
+                         ('post_release_workflows', [dict(workflow='release-windows.yml', tag_input='bad name')]),
+                         ('signed_update_assets', 'setup.exe'),
+                         ('signed_update_suffixes', [''])]:
+            with self.subTest(key=key, bad=bad):
+                self.profile.write_text(json.dumps(dict(profile, **{key: bad})))
+                with self.assertRaises(local.ReleaseError):
+                    local.load_profile(str(self.profile))
 
     def test_wrong_latest_is_not_reported_as_success(self):
         self.world.wrong_latest = True

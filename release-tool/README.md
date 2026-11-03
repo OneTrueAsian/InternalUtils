@@ -45,6 +45,9 @@ No E2E gate, changelog format, unsigned-install warning or fixed asset count is 
 | `mac_assets` | Expected remote macOS asset names; `[]` disables macOS dispatch |
 | `install_notes` | Optional app-specific text appended to the supplied release notes |
 | `replace_windows_assets` | Explicit permission to replace different existing local-build assets; defaults to false |
+| `post_release_workflows` | Extra manual-only workflows to dispatch against the new tag after publication, as `{"workflow": "file.yml", "tag_input": "tag"}`; they are monitored with the macOS build. Defaults to none |
+| `signed_update_assets` | Exact release filenames (same placeholders as `mac_assets`) that must each have the files named by `signed_update_suffixes` before the release counts as complete. Defaults to none |
+| `signed_update_suffixes` | Suffixes of those companion files; defaults to `.manifest.json` and `.signature.json` |
 
 Custom version metadata supports multiple JSON files and nested properties:
 
