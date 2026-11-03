@@ -52,7 +52,7 @@ def job_log_excerpt(repository, job_id, token):
     return "\n".join(lines[:3])
 
 
-def monitor_runs(repository, token, runs, events, stop=None, get=None, interval=15, timeout=7200, clock=time.monotonic, log_get=None):
+def monitor_runs(repository, token, runs, events, stop=None, get=None, interval=15, timeout=21600, clock=time.monotonic, log_get=None):
     stop = stop or threading.Event()
     get = get or (lambda path: github_get(repository, path, token))
     log_get = log_get or (lambda job_id: job_log_excerpt(repository, job_id, token))
