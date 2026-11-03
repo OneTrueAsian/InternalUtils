@@ -49,7 +49,7 @@ class ReleaseTests(unittest.TestCase):
         try:
             app = release_ui.ReleaseApp(root)
             self.assertEqual(app.inputs['build_mode'].get(), release_ui.BUILD_MODES[2])
-            self.assertTrue((Path(release_ui.__file__).parent / app.inputs['app_profile'].get()).is_file())
+            self.assertEqual(app.inputs['app_profile'].get(), '')
             self.assertEqual(app.branch_label.cget('text'), 'Release branch')
             self.assertTrue(app.entry_by_key['windows_workflow'].instate(['disabled']))
             self.assertFalse(app.entry_by_key['notes_file'].instate(['disabled']))

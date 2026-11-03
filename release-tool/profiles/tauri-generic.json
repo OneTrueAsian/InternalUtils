@@ -87,9 +87,10 @@
     "{product}_universal.app.tar.gz"
   ],
   "architecture": "x64",
-  "unsigned": true,
   "requires_strawberry_perl": false,
   "build_path_limit": 90,
   "replace_windows_assets": false,
-  "target_dir": "src-tauri/target"
+  "target_dir": "src-tauri/target",
+  "adapter": "tauri",
+  "install_notes": ""
 }

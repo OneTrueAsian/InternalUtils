@@ -40,7 +40,7 @@
     "{product}-{version}-windows.zip"
   ],
   "mac_assets": [],
-  "unsigned": false,
   "additional_release_files": [],
-  "replace_windows_assets": false
+  "replace_windows_assets": false,
+  "install_notes": ""
 }

@@ -118,7 +118,7 @@ class LocalPipelineTests(unittest.TestCase):
         (self.root / 'Cargo.lock').write_text('[[package]]\nname = "sample"\nversion = "1.0.0"\n')
         (self.root / 'src/changelog.ts').write_text('export const CHANGELOG: Record<string, string[]> = {\n  "1.0.0": ["Original notes",],\n};\n')
         (self.root / 'src/releaseMetadata.test.ts').write_text('const CANDIDATE = "1.0.0";\ndescribe("release metadata", () => {\n  it(`is the ${CANDIDATE} release candidate`, () => {\n    expect(pkg).toBe(CANDIDATE);\n    expect(notes).toMatch(/Original/);\n  });\n});\n')
-        profile = json.loads((local.HERE / 'profiles/tauri-vault-spend.json').read_text())
+        profile = json.loads((local.HERE / 'tests/fixtures/tauri-metadata.json').read_text())
         profile['requires_strawberry_perl'] = False
         self.profile = Path(self.folder.name) / 'profile.json'
         self.profile.write_text(json.dumps(profile))
@@ -184,6 +184,13 @@ class LocalPipelineTests(unittest.TestCase):
         staged = next(command for command in self.commands() if command[:2] == ['git', 'add'])
         self.assertEqual(staged[3:], ['config/app.json'])
 
+    def test_profile_requires_explicit_adapter(self):
+        profile = json.loads(self.profile.read_text())
+        profile.pop('adapter')
+        self.profile.write_text(json.dumps(profile))
+        with self.assertRaisesRegex(local.ReleaseError, 'adapter'):
+            local.load_profile(self.profile)
+
     def test_custom_profile_requires_only_its_configured_build_tools(self):
         profile = local.load_profile(local.HERE / 'profiles/custom-app.json')
         seen = []
@@ -227,6 +234,24 @@ class LocalPipelineTests(unittest.TestCase):
             self.execute()
         self.assertEqual(before, (self.root / 'package.json').read_bytes())
 
+    def test_wrong_profile_stops_before_checkout_or_dependency_setup(self):
+        self.request.update(build_mode='local_windows', tag='v1.0.0', notes_file='')
+        self.world = World(self.root, full=False)
+        factory = self.world.factory
+        def missing_factory(*args):
+            runner = factory(*args)
+            original_run = runner.run
+            def run(command, **kwargs):
+                if command[:3] == ['git', 'cat-file', '-e']:
+                    return 1, 'missing metadata'
+                return original_run(command, **kwargs)
+            runner.run = run
+            return runner
+        self.world.factory = missing_factory
+        with self.assertRaisesRegex(local.ReleaseError, 'profile does not match'):
+            self.execute()
+        self.assertFalse(any(args[:2] == ['git', 'switch'] or args == ['npm', 'ci'] for args in self.commands()))
+
     def test_local_windows_preserves_mac_assets_and_restores_branch(self):
         self.request.update(build_mode='local_windows', tag='v1.0.0', notes_file='')
         self.world = World(self.root, full=False)
@@ -248,6 +273,33 @@ class LocalPipelineTests(unittest.TestCase):
         self.world.wrong_latest = True
         with self.assertRaisesRegex(local.ReleaseError, 'releases/latest'):
             self.execute()
+
+    def test_line_ending_only_changes_refresh_index_without_changing_tree(self):
+        runner = local.Runner(self.root, 'offline-secret', self.events)
+        with patch.object(runner, 'text', side_effect=[' M manifest.json', 'same-tree', 'same-tree', '']), patch.object(runner, 'run', return_value=(0, '')) as run:
+            self.assertEqual(local.tracked_changes(runner), '')
+        self.assertIn(['git', 'add', '--update', '--', ':/'], [call.args[0] for call in run.call_args_list])
+
+    def test_substantive_changes_are_never_staged_by_index_refresh(self):
+        runner = local.Runner(self.root, 'offline-secret', self.events)
+        with patch.object(runner, 'text', return_value=' M manifest.json'), patch.object(runner, 'run', side_effect=[(0, ''), (1, '')]) as run:
+            self.assertEqual(local.tracked_changes(runner), ' M manifest.json')
+        self.assertFalse(any(call.args[0][:2] == ['git', 'add'] for call in run.call_args_list))
+
+    def test_concurrent_index_content_change_stops_release(self):
+        runner = local.Runner(self.root, 'offline-secret', self.events)
+        with patch.object(runner, 'text', side_effect=[' M manifest.json', 'old-tree', 'new-tree']), patch.object(runner, 'run', return_value=(0, '')):
+            with self.assertRaisesRegex(local.ReleaseError, 'Files changed'):
+                local.tracked_changes(runner)
+
+    def test_dirty_checkout_error_names_repository_and_changed_file(self):
+        runner = local.Runner(self.root, 'offline-secret', self.events)
+        with patch.object(runner, 'text', side_effect=['https://github.com/owner/app.git', ' M src/config.json']), patch.object(runner, 'run', return_value=(1, '')):
+            with self.assertRaises(local.ReleaseError) as error:
+                local.check_origin(runner, 'owner/app')
+        self.assertIn(str(self.root), str(error.exception))
+        self.assertIn('src/config.json', str(error.exception))
+        self.assertIn('substantive changes are retained', str(error.exception))
 
     def test_wrong_repository_stops_before_remote_requests(self):
         self.world.bad_origin = True

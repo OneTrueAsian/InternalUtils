@@ -9,7 +9,7 @@ passed as a command-line argument. Without -InputJson, prompts are interactive.
 [CmdletBinding()]
 param(
     [switch]$InputJson,
-    [string]$Repository = 'OneTrueAsian/vault-spend',
+    [string]$Repository = '',
     [string]$Ref,
     [string]$Tag,
     [string]$WindowsWorkflow = 'release-windows.yml',

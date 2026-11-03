@@ -47,9 +47,9 @@ def recovery_mode(request: dict[str, str]) -> bool:
 
 FIELD_HELP = {
     "local_repo": "Choose your local application Git repository, not InternalUtils. The full local release updates versions, runs checks, commits and merges, builds Windows here, and publishes. Use a short path for OpenSSL builds. Existing-tag mode checks out the original tag temporarily and restores your branch.",
-    "app_profile": "Choose a JSON app profile defining version files, release branches, checks and exact asset filenames. Start with tauri-vault-spend.json for Vault Spend, edit tauri-generic.json for another Tauri app, or custom-app.json for other build systems. No E2E commands are added implicitly. Extra checks and preparation hooks can be configured.",
-    "notes_file": "Choose a Markdown file describing what changed under What's new and Fixes and improvements. Its bullets become the in-app What's New entry. Install notes are appended for unsigned builds. Required for a new local release; existing-tag Windows builds preserve the existing release notes.",
-    "build_mode": "Local: full release follows RELEASE-PROCESS.md: versions, checks, commit/merge/push, local Windows build, publish, macOS and final verification. Local: Windows existing tag builds Windows without moving a tag or rerunning macOS. The original GitHub modes remain available and retain their workflow test gates.",
+    "app_profile": "Choose a JSON app profile defining version files, release branches, checks and exact asset filenames. Copy and configure custom-app.json for your build system. tauri-generic.json is an optional Tauri adapter. No E2E commands are added implicitly. Extra checks and preparation hooks can be configured.",
+    "notes_file": "Choose a nonempty Markdown file describing this release. Its content is published as release notes. Optional profile install_notes are appended. Application metadata updates depend on the selected adapter or preparation hooks. Required for a new local release; existing-tag Windows builds preserve the existing release notes.",
+    "build_mode": "Local: full release follows the selected app profile: version preparation, configured checks, commit/merge/push, local build, publish, optional macOS workflow and asset verification. Local: Windows existing tag builds Windows without moving a tag or rerunning macOS. The original GitHub modes remain available and retain their workflow test gates.",
     "repository": (
         "Enter the GitHub repository you want to build, in owner/repo format.\n\n"
         "Example: your-username/your-app. This is the app repository, "
@@ -322,7 +322,7 @@ class ReleaseApp:
         self.tabs.add(local_settings, text="Local release")
         ttk.Label(local_settings, text="Build Windows on this computer", style="Heading.TLabel").grid(row=0, column=0, sticky="w")
         self.add_field(local_settings, 1, "local_repo", "Application folder", "", "The local clone of the app")
-        self.add_field(local_settings, 2, "app_profile", "App profile", "profiles/tauri-generic.json", "JSON settings for the app's release process")
+        self.add_field(local_settings, 2, "app_profile", "App profile", "", "Select a configured profile; bundled JSON files are templates")
         self.add_field(local_settings, 3, "notes_file", "Release notes", "", "Markdown notes for a new release")
         self.browse_buttons = []
         for row, key, title in [(1, "local_repo", "Choose application repository"), (2, "app_profile", "Choose app profile"), (3, "notes_file", "Choose release notes")]:

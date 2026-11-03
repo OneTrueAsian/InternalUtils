@@ -12,30 +12,15 @@ transcription. Each tool runs independently and has its own setup requirements.
 
 ## GitHub Release Tool
 
-Use the default **Local: full release** mode to follow the documented pipeline:
-update versions and notes, run configured checks, commit/merge/push, build Windows
-on your computer, publish at the recorded merge SHA, watch macOS on GitHub and
-verify all four assets plus the latest release. **Local: Windows existing tag**
-adds Windows installers to an existing release while preserving the tag and macOS.
+Prepare and publish releases using a per-application JSON profile. Profiles define version metadata, branches, preparation/check/build commands and exact artifacts. Local mode builds on Windows and optionally monitors a macOS publishing workflow. The final release is pinned to the recorded commit and checked against the configured assets.
 
-The form has local repository/profile/notes pickers, per-platform status, command
-logs, field help and an offline guide. Per-app JSON profiles make the gates,
-metadata and installer patterns configurable. No E2E commands are added by default.
-The older GitHub-only modes remain available and retain their workflow gates.
-
-**Requirements:** Windows, Python 3.10+ with Tkinter, PowerShell, Git, GitHub CLI,
-Node/npm, Rust and Tauri build prerequisites. OpenSSL apps also need Strawberry
-Perl and short build paths. Local build dependencies and Cargo outputs are reused.
-The supplied token is kept in memory and passed only through stdin or the scoped
-Git/GitHub CLI environment; it is never saved or included in command arguments.
+**Requirements:** Windows, Python 3.10+ with Tkinter, PowerShell, Git and GitHub CLI, plus your application's configured build tools. Start with `profiles/custom-app.json`; the optional Tauri adapter applies only to Tauri applications. Tokens stay in memory and logs redact them.
 
 ```powershell
 python .\release-tool\ReleaseTool.pyw
 ```
 
-See [setup and app profiles](release-tool/README.md), the bundled
-[Help page](release-tool/help.html), and the source
-[release process](release-tool/RELEASE-PROCESS.md).
+See [setup and profiles](release-tool/README.md), [offline Help](release-tool/help.html), and [the general release process](release-tool/RELEASE-PROCESS.md).
 
 ## VideoTranscribe
 
