@@ -103,7 +103,8 @@ function Get-TagReleases {
     param([string]$Name)
     $found = @()
     for ($page = 1; $page -le 100; $page++) {
-        $batch = @(Invoke-GitHub "releases?per_page=100&page=$page")
+        # Windows PowerShell 5.1's Invoke-RestMethod returns a JSON array as one object, so flatten before filtering and counting (found by the live run).
+        $batch = @(); foreach ($part in @(Invoke-GitHub "releases?per_page=100&page=$page")) { $batch += @($part) }
         $found += @($batch | Where-Object { $_.tag_name -eq $Name })
         if ($batch.Count -lt 100) { return $found }
     }

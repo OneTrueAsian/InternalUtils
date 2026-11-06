@@ -99,6 +99,13 @@ class PowerShellIntegrationTests(unittest.TestCase):
         self.assertEqual((run['workflow'], run['head_sha'], run['source_sha'], run['run_id'], run['run_ref']), ('build-macos.yml', 'a' * 40, 'a' * 40, 200, 'v1.2.3'))
         self.assertFalse(any(c['method'] not in ('GET', 'POST') for c in next(e['calls'] for e in events if e['kind'] == 'test_calls')))
 
+    def test_a_real_release_list_with_other_releases_in_it_finds_only_this_tags_draft(self):
+        # Found by the second live run: the real list holds many releases and Windows PowerShell 5.1 returns it as one array object. A list of one hid the mix-up.
+        result, events, posts = self.macos('mbmixed')
+        self.assertEqual(result.returncode, 0, events)
+        self.assertEqual(len(posts), 1)
+        self.assertIn('/22/dispatches', posts[0]['uri'])
+
     def test_every_doubt_about_the_draft_stops_macos_before_a_dispatch(self):
         cases = {'mbpublished': 'published', 'mbprerelease': 'prerelease', 'mbwrongid': 'different release', 'mbdup': 'exactly one',
                  'mbunsigned': 'signed set|Windows', 'mbtagmoved': 'no longer points', 'mblegacy': 'draft policy'}

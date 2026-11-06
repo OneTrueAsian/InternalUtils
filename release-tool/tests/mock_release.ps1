@@ -1,6 +1,6 @@
 # Offline integration fixture: no GitHub requests and no real credentials.
 param([ValidateSet('new', 'same', 'different', 'missing', 'partial', 'automatic', 'annotated', 'repository404', 'failed', 'bothfail', 'error422', 'push', 'recovery', 'draft', 'draftmissing', 'draftpublishing', 'draftreuse', 'draftactive', 'draftmac',
-    'draftmacA', 'draftmacAlegacy', 'mbok', 'mbassets', 'mbpartial', 'mbactive', 'mbsuccessrun', 'mbfailedrun', 'mbpublished', 'mbwrongid', 'mbdup', 'mbunsigned', 'mbtagmoved', 'mblegacy', 'mbprerelease', 'mbpages')][string]$Scenario = 'new')
+    'draftmacA', 'draftmacAlegacy', 'mbok', 'mbassets', 'mbpartial', 'mbactive', 'mbsuccessrun', 'mbfailedrun', 'mbpublished', 'mbwrongid', 'mbdup', 'mbunsigned', 'mbtagmoved', 'mblegacy', 'mbprerelease', 'mbpages', 'mbmixed')][string]$Scenario = 'new')
 $global:releaseMockScenario = $Scenario
 $global:releaseMockCalls = [Collections.Generic.List[object]]::new()
 $global:releaseMockWindows = @('App_1.2.3_x64-setup.exe', 'App_1.2.3_x64-setup.exe.manifest.json', 'App_1.2.3_x64-setup.exe.signature.json', 'App_1.2.3_x64_en-US.msi', 'App_1.2.3_x64_en-US.msi.manifest.json', 'App_1.2.3_x64_en-US.msi.signature.json')
@@ -16,6 +16,7 @@ function Get-MockReleases {
         'mbpartial' { return @(New-MockRelease -Names ($global:releaseMockWindows + $global:releaseMockMac[0..1])) }
         'mbpublished' { return @(New-MockRelease -Draft $false) }
         'mbprerelease' { return @(New-MockRelease -Prerelease $true) }
+        'mbmixed' { return @([pscustomobject]@{ id = 5; tag_name = 'v1.2.2'; draft = $false; prerelease = $false; assets = @() }, [pscustomobject]@{ id = 6; tag_name = 'v1.2.99'; draft = $true; prerelease = $true; assets = @() }, (New-MockRelease)) }
         'mbwrongid' { return @(New-MockRelease -Id 99) }
         'mbdup' { return @((New-MockRelease), (New-MockRelease -Id 78)) }
         'mbunsigned' { return @(New-MockRelease -Names ($global:releaseMockWindows | Select-Object -First 5)) }
@@ -51,10 +52,11 @@ function Invoke-RestMethod {
     if ($path.EndsWith('/releases')) {
         if ($global:releaseMockScenario -eq 'mbpages') {
             $page = [int]([regex]::Match($Uri, '&page=(\d+)').Groups[1].Value)
-            if ($page -eq 1) { return @(1..100 | ForEach-Object { [pscustomobject]@{ id = 1000 + $_; tag_name = "v0.0.$_"; draft = $false; prerelease = $false; assets = @() } }) }
-            return @(New-MockRelease)
+            # Windows PowerShell 5.1's Invoke-RestMethod returns a JSON array as ONE object (it does not unroll it); the comma keeps that real behaviour, which the first live run exposed.
+            if ($page -eq 1) { return ,@(1..100 | ForEach-Object { [pscustomobject]@{ id = 1000 + $_; tag_name = "v0.0.$_"; draft = $false; prerelease = $false; assets = @() } }) }
+            return ,@(New-MockRelease)
         }
-        return Get-MockReleases
+        return ,@(Get-MockReleases)
     }
     if ($path.Contains('/git/tags/')) { return [pscustomobject]@{ object = [pscustomobject]@{ type = 'commit'; sha = 'abc123' } } }
     if ($path.EndsWith('/git/refs')) { return [pscustomobject]@{ ref = 'refs/tags/v1.2.3' } }
