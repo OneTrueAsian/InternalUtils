@@ -179,7 +179,8 @@ try {
     if ($InputJson) {
         $payload = [Console]::ReadLine() | ConvertFrom-Json
         $Repository = [string]$payload.repository
-        $Ref = [string]$payload.ref
+        # The macOS phase of the draft modes runs on the tag and sends no branch, so the field may be absent (strict mode would otherwise stop here).
+        $Ref = if ($payload.PSObject.Properties["ref"]) { [string]$payload.ref } else { '' }
         $Tag = [string]$payload.tag
         $WindowsWorkflow = [string]$payload.windows_workflow
         $MacWorkflow = [string]$payload.mac_workflow

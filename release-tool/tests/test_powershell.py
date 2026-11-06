@@ -81,6 +81,14 @@ class PowerShellIntegrationTests(unittest.TestCase):
         request.update(changes)
         return self.scenario(name, **request)
 
+    def test_the_request_the_ui_really_sends_has_no_ref_and_the_macos_phase_still_runs(self):
+        # Found by the first live run: release_ui.run_draft_with_macos builds the macOS request without a ref (macOS runs on the tag), and strict mode
+        # made reading payload.ref a crash. The helper above always supplied a ref, which hid it.
+        result, events, posts = self.macos('mbok', without=('ref',))
+        self.assertEqual(result.returncode, 0, events)
+        self.assertEqual(len(posts), 1)
+        self.assertIn('/22/dispatches', posts[0]['uri'])
+
     def test_macos_is_dispatched_once_for_the_exact_tag_after_every_check_passes(self):
         result, events, posts = self.macos('mbok')
         self.assertEqual(result.returncode, 0, events)
@@ -162,6 +170,8 @@ class PowerShellIntegrationTests(unittest.TestCase):
         command[-2:] = [str(Path(__file__).with_name('mock_release.ps1')), '-Scenario', name]
         request = dict(repository='owner/repo', ref='main', tag='v1.2.3', token='offline-secret',
                        windows_workflow='release-windows.yml', mac_workflow='build-macos.yml', tag_input='tag')
+        for key in changes.pop('without', ()):
+            request.pop(key, None)
         request.update(changes)
         result = subprocess.run(command, input=json.dumps(request) + '\n', text=True,
                                 encoding='utf-8', capture_output=True, timeout=30, env=release_ui.powershell_environment(command[0]),
