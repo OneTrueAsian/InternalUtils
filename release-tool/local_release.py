@@ -18,7 +18,7 @@ import threading
 from urllib.parse import quote
 
 from release_monitor import monitor_runs
-from release_errors import ReleaseError, CommandError, inside
+from release_errors import ReleaseError, CommandError, inside, reserved_test_version
 from release_metadata import check_versions, prepare_versions, product_name, changelog_entry, custom_versions
 
 HERE = Path(__file__).resolve().parent
@@ -81,6 +81,8 @@ def validate_local_request(request):
         raise ReleaseError("Use owner/repo for the repository.")
     if not re.fullmatch(r"v\d+\.\d+\.\d+", request.get("tag", "")):
         raise ReleaseError("Local releases require a stable version tag such as v1.0.0.")
+    if reserved_test_version(request["repository"], request["tag"]):
+        raise ReleaseError(f"{request['tag']} is a reserved test version (v1.3.90 to v1.3.99) for {request['repository']} and cannot be released by this tool.")
     if not request.get("token"):
         raise ReleaseError("Enter your GitHub API token.")
     folder = Path(request.get("local_repo", "")).expanduser()
@@ -342,6 +344,14 @@ def check_profile_source(runner, profile, source):
             raise ReleaseError(f"Selected app profile does not match the release source: {path} is missing. Choose a configured profile for this application; bundled profiles are templates. No checkout or build was performed.")
 
 
+def require_newer_than_latest(repository, version, latest_tag, not_newer_message):
+    """A reserved test version as releases/latest is refused, never compared: it would make every real release look older (or newer) than it is."""
+    if reserved_test_version(repository, latest_tag):
+        raise ReleaseError(f"releases/latest points at {latest_tag}, a reserved test version. Fix releases/latest first; a test version is never used to decide what is newer.")
+    if re.fullmatch(r"v\d+\.\d+\.\d+", latest_tag) and tuple(map(int, version.split("."))) <= tuple(map(int, latest_tag[1:].split("."))):
+        raise ReleaseError(not_newer_message)
+
+
 def local_pipeline(request, events, stop=None, runner_factory=Runner, monitor=monitor_runs):
     profile = validate_local_request(request)
     token = request["token"]
@@ -377,9 +387,7 @@ def local_pipeline(request, events, stop=None, runner_factory=Runner, monitor=mo
                     runner.run(["git", "switch", branch] if exists == 0 else ["git", "switch", "-c", branch])
                 previous = runner.api(repository, "releases/latest", missing=True)
                 if previous:
-                    old_tag = previous["tag_name"]
-                    if re.fullmatch(r"v\d+\.\d+\.\d+", old_tag) and tuple(map(int, version.split("."))) <= tuple(map(int, old_tag[1:].split("."))):
-                        raise ReleaseError("The new release must be newer than releases/latest.")
+                    require_newer_than_latest(repository, version, previous["tag_name"], "The new release must be newer than releases/latest.")
                     runner.run(["git", "log", "--oneline", previous["tag_name"] + "..HEAD"])
                     runner.run(["git", "diff", "--stat", previous["tag_name"] + "..HEAD"])
                 notes = Path(request["notes_file"]).expanduser().read_text(encoding="utf-8")
@@ -470,8 +478,8 @@ def local_pipeline(request, events, stop=None, runner_factory=Runner, monitor=mo
                 raise ReleaseError("The release tag changed or was created by another process; publishing stopped.")
             if full:
                 current_latest = runner.api(repository, "releases/latest", missing=True)
-                if current_latest and re.fullmatch(r"v\d+\.\d+\.\d+", current_latest.get("tag_name", "")) and tuple(map(int, version.split("."))) <= tuple(map(int, current_latest["tag_name"][1:].split("."))):
-                    raise ReleaseError("A newer release was published during the build. Publication stopped to avoid replacing releases/latest with an older version.")
+                if current_latest:
+                    require_newer_than_latest(repository, version, current_latest.get("tag_name", ""), "A newer release was published during the build. Publication stopped to avoid replacing releases/latest with an older version.")
                 runner.run(["gh", "release", "create", tag, *map(str, local_files), "--repo", repository, "--target", sha,
                             "--title", f"{product} {version}", "--notes-file", str(notes_path), "--latest"])
             else:
@@ -506,7 +514,7 @@ def local_pipeline(request, events, stop=None, runner_factory=Runner, monitor=mo
                     requested_at = datetime.now(timezone.utc).isoformat()
                     result = runner.api(repository, f"actions/workflows/{workflow}/dispatches", dict(ref=tag, inputs={tag_input: tag}))
                     runs.append(dict(workflow=workflow, head_sha=sha, tag=tag, requested_at=requested_at,
-                                     previous_run_ids=previous_ids, run_id=result.get("workflow_run_id"), url=result.get("html_url", "")))
+                                     previous_run_ids=previous_ids, run_id=result.get("workflow_run_id"), url=result.get("html_url", ""), show_progress=True))
                     runner.emit("link", f"{label}: build requested", url=runs[-1]["url"])
                 if not monitor(repository, token, runs, events, stop=runner.stop):
                     for run in runs:

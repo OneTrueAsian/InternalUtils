@@ -13,8 +13,9 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from urllib.parse import urlparse
 import webbrowser
-from release_monitor import monitor_runs
+from release_monitor import monitor_runs, verify_windows_draft
 from local_release import load_profile, validate_local_request, run_local_release, ReleaseError
+from release_errors import reserved_test_version
 
 SCRIPT = Path(__file__).resolve().with_name("Start-GitHubRelease.ps1")
 HELP_PAGE = Path(__file__).resolve().with_name("help.html")
@@ -28,7 +29,17 @@ REMOTE_BRANCH_HELP = (
     "Both workflow files must exist on the selected branch and on the repository's default branch."
 )
 
-BUILD_MODES = ("Windows + macOS", "Windows only · existing tag", "Local: full release", "Local: Windows existing tag")
+BUILD_MODES = ("Windows + macOS", "Windows only · existing tag", "Local: full release", "Local: Windows existing tag",
+               "Windows: sharded draft", "Windows: serial draft")
+
+
+def draft_mode(request):
+    return {"windows_sharded": "windows_sharded", "windows_serial_draft": "windows_serial_draft",
+            BUILD_MODES[4]: "windows_sharded", BUILD_MODES[5]: "windows_serial_draft"}.get(request.get("build_mode"))
+
+
+def windows_only(request):
+    return recovery_mode(request) or bool(draft_mode(request))
 
 
 def local_mode(request):
@@ -91,6 +102,9 @@ FIELD_HELP = {
         "Normal builds dispatch against the release tag. Recovery dispatches against the workflow branch and requires a tag input."
     ),
 }
+FIELD_HELP["build_mode"] += ("\n\nFor Vault Spend's new release pipeline choose Windows: sharded draft (recommended), or Windows: serial draft as fallback. "
+                            "Both wait for the complete gate and protected signing, then verify an unpublished draft. macOS is not dispatched: "
+                            "its existing workflow can publish the draft. Publication remains a separate owner action.")
 
 
 class HelpTooltip:
@@ -155,14 +169,21 @@ def validate_request(request: dict[str, str]) -> None:
             or re.search(r"[\s~^:?*\[\\\x00-\x20\x7f]", tag)
             or any(p.startswith(".") or p.endswith(".lock") for p in tag.split("/"))):
         raise ValueError("Enter a valid Git tag, such as v1.2.9.")
-    if request.get("build_mode", "both") not in ("both", "windows_recovery", *BUILD_MODES):
+    if request.get("build_mode", "both") not in ("both", "windows_recovery", "windows_sharded", "windows_serial_draft", *BUILD_MODES):
         raise ValueError("Choose a supported build mode.")
+    if draft_mode(request):
+        if not re.fullmatch(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", tag) or re.fullmatch(r"v1\.3\.9\d", tag):
+            raise ValueError("Draft release mode requires a production vX.Y.Z tag; v1.3.90–v1.3.99 are reserved tests.")
+        if request["tag_input"] != "tag":
+            raise ValueError("Draft release mode requires the workflow's tag input.")
+    if reserved_test_version(request["repository"], tag):
+        raise ValueError(f"{tag} is a reserved test version (v1.3.90 to v1.3.99) for {request['repository']} and cannot be released by this tool.")
     if recovery_mode(request) and not request["tag_input"]:
         raise ValueError("Windows recovery requires a tag input name.")
-    for key in (("windows_workflow",) if recovery_mode(request) else ("windows_workflow", "mac_workflow")):
+    for key in (("windows_workflow",) if windows_only(request) else ("windows_workflow", "mac_workflow")):
         if not re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.-]*\.ya?ml", request[key]):
             raise ValueError("Use workflow filenames, such as release-windows.yml.")
-    if not recovery_mode(request) and request["windows_workflow"] == request["mac_workflow"]:
+    if not windows_only(request) and request["windows_workflow"] == request["mac_workflow"]:
         raise ValueError("Choose different Windows and macOS workflows.")
     if request["tag_input"] and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", request["tag_input"]):
         raise ValueError("Enter a workflow input name, or leave it blank for workflows without inputs.")
@@ -202,7 +223,7 @@ def run_release(request: dict[str, str], events: queue.Queue, popen=subprocess.P
     process = None
     try:
         validate_request(request)
-        request["build_mode"] = "windows_recovery" if recovery_mode(request) else "both"
+        request["build_mode"] = draft_mode(request) or ("windows_recovery" if recovery_mode(request) else "both")
         process = popen(powershell_command(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -231,8 +252,18 @@ def run_release(request: dict[str, str], events: queue.Queue, popen=subprocess.P
         code = process.wait()
         if code and not error_seen:
             events.put({"kind": "error", "message": f"PowerShell exited with code {code}."})
-        expected = {request["windows_workflow"]} if recovery_mode(request) else {request["windows_workflow"], request["mac_workflow"]}
+        expected = {request["windows_workflow"]} if windows_only(request) else {request["windows_workflow"], request["mac_workflow"]}
         runs = list({run["workflow"]: run for run in runs if run.get("workflow") in expected}.values())
+        for run in runs:
+            run["show_progress"] = True
+        if draft_mode(request):
+            gate_jobs = ["build", "checks-rust", "checks-other", "aggregate"] + [f"shard {i} of 6" for i in range(1, 7)]
+            required = (["sharded-gate / " + job for job in gate_jobs] + ["sharded-package", "sharded-sign-updates"]
+                        if draft_mode(request) == "windows_sharded" else ["release", "sign-updates"])
+            for run in runs:
+                run.update(track_jobs=True, required_jobs=required)
+                if draft_mode(request) == "windows_sharded":
+                    run["required_artifacts"] = ["sharded-gate-summary-{attempt}"]
         identified_selected = {run["workflow"] for run in runs} == expected
         if code == 0 and not identified_selected:
             error_seen = True
@@ -241,6 +272,9 @@ def run_release(request: dict[str, str], events: queue.Queue, popen=subprocess.P
             def put(self, event):
                 events.put({key: value.replace(secret, "[redacted]") if isinstance(value, str) else value for key, value in event.items()})
         monitored = monitor_runs(request["repository"], secret, runs, SafeMonitorEvents(), stop=stop) if runs else False
+        if code == 0 and not error_seen and monitored and identified_selected and draft_mode(request):
+            url = verify_windows_draft(request["repository"], request["tag"], runs[0].get("source_sha"), secret)
+            events.put({"kind": "link", "message": "Windows draft verified: installers and signing companions present. Not published; review before publishing.", "url": url})
         if code == 0 and not runs:
             events.put({"kind": "error", "message": "No workflow runs were identified. Build results are unknown; check GitHub Actions."})
         events.put({"kind": "finished", "success": code == 0 and not error_seen and monitored and identified_selected})
@@ -469,7 +503,7 @@ class ReleaseApp:
             return
         request = {key: variable.get() for key, variable in self.inputs.items()}
         local = local_mode(request)
-        mode = normalize_local(request)["build_mode"] if local else "windows_recovery" if recovery_mode(request) else "both"
+        mode = normalize_local(request)["build_mode"] if local else draft_mode(request) or ("windows_recovery" if recovery_mode(request) else "both")
         recovery = mode == "windows_recovery"
         profile = {}
         if local:
@@ -483,14 +517,14 @@ class ReleaseApp:
         self.summary_branch_label.configure(text="RELEASE BRANCH" if mode == "local_release" else "SOURCE" if mode == "local_windows" else "WORKFLOW BRANCH" if recovery else "SOURCE BRANCH")
         self.entry_by_key["ref"].configure(state="disabled" if mode == "local_windows" else "normal")
         self.entry_by_key["windows_workflow"].configure(state="disabled" if local else "normal")
-        self.entry_by_key["mac_workflow"].configure(state="disabled" if mode in ("windows_recovery", "local_windows") or no_mac else "normal")
+        self.entry_by_key["mac_workflow"].configure(state="disabled" if windows_only(request) or mode == "local_windows" or no_mac else "normal")
         self.entry_by_key["tag_input"].configure(state="disabled" if mode == "local_windows" or (local and no_mac) else "normal")
         self.entry_by_key["notes_file"].configure(state="normal" if mode == "local_release" else "disabled")
         for key in ("local_repo", "app_profile"):
             self.entry_by_key[key].configure(state="normal" if local else "disabled")
         for key, button in zip(("local_repo", "app_profile", "notes_file"), self.browse_buttons):
             button.configure(state="normal" if local and (key != "notes_file" or mode == "local_release") else "disabled")
-        self.footer.set("Build release runs the full local pipeline and publishes after Windows succeeds." if mode == "local_release" else "Builds the original tag locally and uploads Windows installers; macOS is preserved." if mode == "local_windows" else "Only pushed code is built. Your workflows decide when the release is published.")
+        self.footer.set("Build release runs the full local pipeline and publishes after Windows succeeds." if mode == "local_release" else "Builds the original tag locally and uploads Windows installers; macOS is preserved." if mode == "local_windows" else "Windows only: prepare a signed draft for review. macOS and publication are separate." if draft_mode(request) else "Only pushed code is built. Your workflows decide when the release is published.")
         for key, fallback in [("repository", "No repository selected"), ("ref", "Existing release tag" if mode == "local_windows" else ("release-" + self.inputs["tag"].get()[1:] if re.fullmatch(r"v\d+\.\d+\.\d+", self.inputs["tag"].get()) else "Release branch from tag") if mode == "local_release" else "Repository default branch"), ("tag", "No tag entered")]:
             self.summary[key].set((self.inputs[key].get().strip() if not (mode == "local_windows" and key == "ref") else "") or fallback)
         if reset and hasattr(self, "target_repo"):
@@ -552,7 +586,8 @@ class ReleaseApp:
         self.append_log(f"Release request: {self.target_repo} / {self.target_tag}")
         self.local = local_mode(request)
         self.local_kind = normalize_local(request)["build_mode"] if self.local else ""
-        self.recovery = recovery_mode(request) or self.local_kind == "local_windows" or (self.local and not load_profile(request["app_profile"])["mac_assets"])
+        self.draft = bool(draft_mode(request))
+        self.recovery = windows_only(request) or self.local_kind == "local_windows" or (self.local and not load_profile(request["app_profile"])["mac_assets"])
         for platform, variable in self.platform_status.items():
             variable.set(f"{platform}  ·  Not requested" if self.recovery and platform == "macOS" else f"{platform}  ·  Waiting")
         self.mode_control.configure(state="disabled")
@@ -621,7 +656,7 @@ class ReleaseApp:
                         entry.configure(state="normal")
                     self.mode_control.configure(state="readonly")
                     self.update_summary(reset=False)
-                    self.status.set(("Windows installers verified" if getattr(self, "local_kind", "") == "local_windows" else "Release verified: configured assets" if getattr(self, "local_kind", "") == "local_release" else "Windows build completed successfully" if getattr(self, "recovery", False) else "Both builds completed successfully") if event["success"] else "Monitoring stopped · check GitHub" if self.stop_event.is_set() else "Release not successful · see activity")
+                    self.status.set(("Windows draft ready for review · not published" if getattr(self, "draft", False) else "Windows installers verified" if getattr(self, "local_kind", "") == "local_windows" else "Release verified: configured assets" if getattr(self, "local_kind", "") == "local_release" else "Windows build completed successfully" if getattr(self, "recovery", False) else "Both builds completed successfully") if event["success"] else "Monitoring stopped · check GitHub" if self.stop_event.is_set() else "Release not successful · see activity")
                     self.status_label.configure(foreground="#326346" if event["success"] else "#a13226")
                     for platform, variable in self.platform_status.items():
                         if variable.get().endswith("Waiting"):

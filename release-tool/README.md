@@ -14,6 +14,22 @@ Copy `profiles/custom-app.json` to a profile for your application and edit its s
 
 ## Create a release
 
+For `OneTrueAsian/vault-spend`, versions `v1.3.90` to `v1.3.99` are reserved for tests. Every mode (remote, recovery, draft and local) refuses them before any tag, workflow or local file is touched, including spellings with leading zeros such as `v1.3.095`. If `releases/latest` ever points at one, the local pipeline stops instead of comparing against it. Other applications can use those versions.
+
+### Vault Spend: hosted Windows draft
+
+For Vault Spend's sharded pipeline, select **Windows: sharded draft** in the Build dropdown. Enter `OneTrueAsian/vault-spend`, the pushed release branch, its production `vX.Y.Z` tag, and your token. Leave **Windows workflow** as `release-windows.yml` and **Tag input** as `tag`. Version metadata must already match the tag. Local folder/profile/notes fields are not used in this mode.
+
+The tool pins `source_sha` to the pushed commit and dispatches `sharded=true`, `test_release=false`, `diagnostic_only=false`, and `recovery=false`. **Windows: serial draft** sends `sharded=false` as the fallback. Reserved test tags `v1.3.90`–`v1.3.99` are refused. These modes require a compatible draft-only workflow on the selected source and a registered workflow on the default branch.
+
+Activity shows build, Rust checks, other checks, six shards, aggregation, packaging and signing job/step changes. The monitor waits through GitHub's protected signing approval; approve it on GitHub when ready. GitHub's run status can lag behind its jobs, so a run that reports success while any job still shows as running is not accepted: Activity names the jobs it is waiting for, once, and keeps checking (if they never settle, monitoring ends as 'not confirmed' with a link to the run, never as success). For the sharded draft the run's own gate summary (the `sharded-gate-summary-<attempt>` artifact) must also exist, unexpired and nonempty, for that exact run, attempt and commit. A required job that was skipped, cancelled or failed is never accepted, and nothing is ever re-run or cancelled by the tool. A successful run is accepted only after all required jobs succeeded and the authenticated draft contains nonempty EXE/MSI installers and their manifest/signature companions at the requested tag commit. Vault Spend filenames must match the requested version. This is a metadata/presence check, not independent cryptographic verification of downloaded assets; the workflow owns digest/signature verification.
+
+Completion says **Windows draft ready for review · not published**. Publication remains a separate owner action. No macOS workflow is dispatched: the current `build-macos.yml` can publish the shared release before Windows review. The legacy Windows + macOS mode refuses pairing a draft-producing Windows workflow with macOS. Migrate and validate the macOS draft policy separately before a combined release.
+
+Draft dispatches do not reuse an old same-commit workflow run, whose inputs may have selected a different gate. Diagnose failures before retrying. A populated existing draft may be refused by the workflow; inspect it and select a new version/source as appropriate. The tool never deletes drafts, replaces assets or moves tags to recover automatically.
+
+### Generic local release
+
 1. Commit application code changes before starting; tracked files must be clean.
 2. Enter `owner/app-repo`, a new stable tag such as `v1.0.1`, and your GitHub token.
 3. Select **Local: full release**, the application checkout, your customized profile, and a nonempty Markdown release-notes file.
@@ -73,6 +89,8 @@ An optional macOS publishing workflow must exist on the default branch and the r
 The **Windows + macOS** mode dispatches the two configured GitHub workflows instead of building locally. Each workflow defines its own tests and publication behavior. **Windows only · existing tag** is a legacy recovery mode requiring a compatible workflow with `recovery` and `source_sha` inputs and recovery run naming; it is not a prerequisite for normal releases.
 
 ## Results and recovery
+
+Every remote build the tool starts (Windows and macOS, in every build mode, and the local pipeline's macOS and signing builds) also shows its job and step progress in Activity: one line when a job or step starts, and one line when it finishes with how long it took, never repeated. Steps that have not started are not listed. This is step progress only, by the owner's choice: running build output is not streamed (GitHub does not stream it reliably), and a failed job's log is read once, after the failure, for up to 10 error lines. Every displayed name and log line has terminal control sequences removed and the token redacted. If GitHub cannot list the steps, Activity says so once and the run status is still monitored.
 
 Activity records commands, failures and build links. **Stop after step** waits for the current command and stops before the next; it retains pushed commits and published assets. Stopping workflow monitoring does not cancel GitHub jobs.
 

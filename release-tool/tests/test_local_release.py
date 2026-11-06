@@ -26,6 +26,10 @@ class World:
         self.bad_origin = False
         self.mac_fail = False
         self.wrong_latest = False
+        self.origin = 'owner/app'
+        self.latest_tags = []
+        self.fail_push = False
+        self.tag_after_release = None
         self.signed_files = []
         self.runner = None
 
@@ -38,7 +42,7 @@ class World:
                 if self.stop.is_set() and not kwargs.get('ignore_stop'):
                     raise local.ReleaseError('Stopped')
                 if args[:3] == ['git', 'remote', 'get-url']:
-                    return 0, 'https://github.com/other/app.git' if world.bad_origin else 'https://github.com/owner/app.git'
+                    return 0, 'https://github.com/other/app.git' if world.bad_origin else f'https://github.com/{world.origin}.git'
                 if args[:3] == ['git', 'branch', '--show-current']:
                     return 0, 'release-1.0.1' if world.full else 'main'
                 if args[:3] == ['git', 'rev-parse', 'HEAD']:
@@ -49,6 +53,8 @@ class World:
                     world.head = args[-1] if '--detach' in args else 'a' * 40
                 if args[:2] == ['git', 'merge']:
                     world.head = 'b' * 40
+                if args[:2] == ['git', 'push'] and world.fail_push:
+                    raise local.CommandError('git push failed (exit 1)')
                 if args == ['npm', 'install']:
                     version = json.loads((root / 'package.json').read_text())['version']
                     (root / 'package-lock.json').write_text(json.dumps(dict(version=version, packages={'':dict(version=version)})))
@@ -66,7 +72,7 @@ class World:
                         path.parent.mkdir(parents=True, exist_ok=True)
                         path.write_bytes(b'new installer')
                 if args[:3] == ['gh', 'release', 'create']:
-                    world.tag = args[args.index('--target') + 1]
+                    world.tag = world.tag_after_release or args[args.index('--target') + 1]
                     world.release = dict(tag_name=args[3], draft=False, prerelease=False, assets=[dict(name=Path(name).name.replace(' ', '.'), size=13) for name in args[4:args.index('--repo')]])
                 if args[:3] == ['gh', 'release', 'upload']:
                     paths = args[4:args.index('--repo')]
@@ -80,6 +86,9 @@ class World:
                 if path.startswith('releases/tags/'):
                     return world.release
                 if path == 'releases/latest':
+                    if world.latest_tags:
+                        tag = world.latest_tags.pop(0)
+                        return dict(tag_name=tag, draft=False, prerelease=False, assets=[]) if tag else None
                     if not world.release:
                         return None
                     return dict(world.release, tag_name='v0.9.0') if world.wrong_latest else world.release
@@ -296,6 +305,32 @@ class LocalPipelineTests(unittest.TestCase):
         monitored = [options['runs'] for args, options in self.world.calls if args == ['MONITOR']]
         self.assertEqual([[run['workflow'] for run in runs] for runs in monitored], [['build-macos.yml', 'release-windows.yml']])
         self.assertEqual(len(self.world.release['assets']), 8)
+        self.assertTrue(all(run['show_progress'] for runs in monitored for run in runs), 'macOS and post-release builds show step progress')
+
+    def dispatch_calls(self):
+        return [args[1] for args, _ in self.world.calls if args[0] == 'API' and args[1].endswith('/dispatches')]
+
+    def test_a_failed_push_stops_everything_after_it_and_is_never_reported_as_success(self):
+        self.world.fail_push = True
+        with self.assertRaisesRegex(local.ReleaseError, 'git push failed'):
+            self.execute()
+        self.assertFalse([args for args in self.commands() if args[:3] == ['gh', 'release', 'create'] or args[:2] == ['npx', 'tauri']])
+        self.assertEqual(self.dispatch_calls(), [])
+        self.assertFalse(any(event['kind'] == 'done' for event in self.events.queue))
+
+    def test_no_build_is_dispatched_when_the_remote_tag_does_not_point_at_the_released_commit(self):
+        self.world.tag_after_release = 'f' * 40
+        with self.assertRaisesRegex(local.ReleaseError, 'Remote release tag no longer points'):
+            self.execute()
+        self.assertEqual(self.dispatch_calls(), [])
+        self.assertFalse(any(args == ['MONITOR'] for args in self.commands()))
+
+    def test_a_dispatch_is_never_reported_as_a_finished_release(self):
+        self.world.mac_fail = True
+        with self.assertRaisesRegex(local.ReleaseError, 'did not complete successfully'):
+            self.execute()
+        self.assertTrue(self.dispatch_calls(), 'the build was requested')
+        self.assertFalse(any(event['kind'] == 'done' for event in self.events.queue))
 
     def test_release_without_the_signed_update_files_is_not_reported_as_success(self):
         self.enable_signing()
@@ -363,6 +398,55 @@ class LocalPipelineTests(unittest.TestCase):
         self.assertIn(str(self.root), str(error.exception))
         self.assertIn('src/config.json', str(error.exception))
         self.assertIn('substantive changes are retained', str(error.exception))
+
+    def reserved_world(self, tag, mode='local_release'):
+        self.request.update(repository='OneTrueAsian/vault-spend', tag=tag, build_mode=mode, token='offline-secret')
+        self.world = World(self.root, full=mode == 'local_release')
+        self.world.origin = 'OneTrueAsian/vault-spend'
+
+    def assert_nothing_prepared(self):
+        self.assertEqual(json.loads((self.root / 'package.json').read_text())['version'], '1.0.0')
+        self.assertFalse([args for args in self.commands() if args[:2] in (['git', 'commit'], ['git', 'merge'], ['git', 'push'], ['gh', 'release'])])
+        self.assertFalse([args for args, kwargs in self.world.calls if args[0] == 'API' and kwargs.get('body')])
+
+    def test_vault_spend_reserved_test_versions_are_refused_before_any_local_or_remote_work(self):
+        for mode in ('local_release', 'local_windows'):
+            for repository in ('OneTrueAsian/vault-spend', 'onetrueasian/Vault-Spend'):
+                for tag in ('v1.3.90', 'v1.3.95', 'v1.3.99', 'v1.3.095', 'v01.3.95'):
+                    with self.subTest(mode=mode, repository=repository, tag=tag):
+                        self.reserved_world(tag, mode)
+                        self.request['repository'] = repository
+                        with self.assertRaisesRegex(local.ReleaseError, 'reserved test version'):
+                            self.execute()
+                        self.assertEqual(self.world.calls, [])
+                        self.assert_nothing_prepared()
+
+    def test_reserved_band_is_only_vault_spends_and_supported_versions_still_validate(self):
+        for repository, tag in [('OneTrueAsian/vault-spend', 'v1.3.89'), ('OneTrueAsian/vault-spend', 'v1.3.100'), ('OneTrueAsian/vault-spend', 'v1.3.3'),
+                                ('OneTrueAsian/vault-spend', 'v1.4.95'), ('OneTrueAsian/vault-spend', 'v1.2.95'), ('owner/app', 'v1.3.95'), ('someone/vault-spend', 'v1.3.95')]:
+            with self.subTest(repository=repository, tag=tag):
+                local.validate_local_request(dict(self.request, repository=repository, tag=tag))
+
+    def test_a_reserved_latest_release_is_refused_not_used_to_judge_what_is_newer(self):
+        for tag in ('v1.3.4', 'v1.3.100'):
+            with self.subTest(tag=tag):
+                self.reserved_world(tag)
+                self.world.latest_tags = ['v1.3.95']
+                with self.assertRaisesRegex(local.ReleaseError, 'releases/latest points at v1.3.95.*reserved test version'):
+                    self.execute()
+                self.assert_nothing_prepared()
+
+    def test_a_reserved_release_appearing_as_latest_during_the_build_stops_publication(self):
+        self.reserved_world('v1.3.4')
+        self.world.latest_tags = [None, 'v1.3.95']
+        with self.assertRaisesRegex(local.ReleaseError, 'releases/latest points at v1.3.95.*reserved test version'):
+            self.execute()
+        self.assertFalse(any(args[:3] == ['gh', 'release', 'create'] for args in self.commands()))
+
+    def test_other_apps_still_compare_against_a_latest_release_in_that_range(self):
+        self.world.latest_tags = ['v1.3.95']
+        with self.assertRaisesRegex(local.ReleaseError, 'newer than releases/latest'):
+            self.execute()
 
     def test_wrong_repository_stops_before_remote_requests(self):
         self.world.bad_origin = True

@@ -15,7 +15,7 @@ param(
     [string]$WindowsWorkflow = 'release-windows.yml',
     [string]$MacWorkflow = 'build-macos.yml',
     [string]$TagInput = 'tag',
-    [ValidateSet("both", "windows_recovery")][string]$BuildMode = "both",
+    [ValidateSet("both", "windows_recovery", "windows_sharded", "windows_serial_draft")][string]$BuildMode = "both",
     [Security.SecureString]$Token
 )
 Set-StrictMode -Version Latest
@@ -130,10 +130,16 @@ try {
         if ($part.StartsWith('.') -or $part.EndsWith('.lock')) { throw 'Invalid Git release tag component.' }
     }
     if ($TagInput -and $TagInput -notmatch '^[A-Za-z_][A-Za-z0-9_-]*$') { throw 'Invalid workflow input name.' }
-    if ($BuildMode -notin @("both", "windows_recovery")) { throw "Invalid build mode." }
+    if ($BuildMode -notin @("both", "windows_recovery", "windows_sharded", "windows_serial_draft")) { throw "Invalid build mode." }
     $recovery = $BuildMode -eq "windows_recovery"
+    $draftMode = $BuildMode -in @("windows_sharded", "windows_serial_draft")
+    $windowsOnly = $recovery -or $draftMode
+    if ($draftMode -and ($Tag -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' -or $Tag -match '^v1\.3\.9[0-9]$' -or $TagInput -ne 'tag')) {
+        throw 'Draft mode requires a production vX.Y.Z tag and the tag input; v1.3.90 to v1.3.99 are reserved tests.'
+    }
+    if ($Repository -ieq 'OneTrueAsian/vault-spend' -and $Tag -match '^v0*1\.0*3\.0*9[0-9]$') { throw "$Tag is a reserved test version (v1.3.90 to v1.3.99) for $Repository and cannot be released by this tool." }
     if ($recovery -and -not $TagInput) { throw "Recovery requires a tag input name." }
-    $files = @(if ($recovery) { $WindowsWorkflow.Trim() } else { $WindowsWorkflow.Trim(); $MacWorkflow.Trim() })
+    $files = @(if ($windowsOnly) { $WindowsWorkflow.Trim() } else { $WindowsWorkflow.Trim(); $MacWorkflow.Trim() })
     if ($files.Count -eq 2 -and $files[0] -eq $files[1]) { throw 'Windows and macOS workflows must be different files.' }
     foreach ($file in $files) {
         if ($file -notmatch '^[A-Za-z0-9_-][A-Za-z0-9_.-]*\.ya?ml$') { throw 'Enter workflow filenames such as build-macos.yml.' }
@@ -141,6 +147,7 @@ try {
     Send-Event 'log' "Checking remote branch $Ref..."
     $branch = Invoke-GitHub ('branches/' + [Uri]::EscapeDataString($Ref))
     $sha = $branch.commit.sha
+    if ($draftMode -and $sha -notmatch '^[0-9a-f]{40}$') { throw 'Draft mode requires an exact 40-character source commit.' }
     $encodedTag = [Uri]::EscapeDataString($Tag)
     $existingTag = Invoke-GitHub "git/ref/tags/$encodedTag" -AllowMissing
     $sourceSha = $sha
@@ -158,6 +165,7 @@ try {
 
     # Verify both workflows before making any remote changes.
     $workflows = @()
+    $windowsCreatesDraft = $false
     foreach ($file in $files) {
         $metadata = Invoke-GitHub "actions/workflows/$file"
         if ($metadata.state -ne 'active') { throw "Workflow $file is disabled." }
@@ -176,9 +184,22 @@ try {
         if ($recovery -and $yamlText -notmatch '(?m)^run-name:[^\r\n]*Recover Windows[^\r\n]*inputs\.tag') {
             throw "Recovery workflow $file must name runs Recover Windows <tag> using inputs.tag."
         }
+        if ($file -eq $WindowsWorkflow.Trim()) { $windowsCreatesDraft = $yamlText -match '(?m)^\s+releaseDraft:\s*true\s*$' }
+        if ($draftMode) {
+            foreach ($inputName in @('tag', 'sharded', 'source_sha', 'diagnostic_only', 'test_release', 'recovery')) {
+                if ($yamlText -notmatch ("(?m)^      " + $inputName + ":\s*$")) { throw "Workflow $file does not support the draft release input $inputName." }
+            }
+            if (-not $windowsCreatesDraft -or $yamlText -match '(?m)^\s+releaseDraft:\s*false\s*$') { throw 'Draft mode requires a draft-only packaging workflow; no tag was created.' }
+        }
+        if (-not $windowsOnly -and $file -eq $MacWorkflow.Trim() -and $windowsCreatesDraft) {
+            throw 'Windows now prepares a draft. Do not dispatch macOS alongside it: that workflow may publish before review. Choose Windows: sharded draft or the serial draft fallback.'
+        }
         $workflows += @{ file = $file; id = $metadata.id }
     }
     Send-Event 'log' "Target: $Repository / $Ref / $Tag / $sha"
+    if ($draftMode) {
+        Send-Event 'log' "Windows draft mode: $BuildMode, exact source $sourceSha. macOS is not requested. Approve release-signing on GitHub when prompted; publication remains a separate owner action."
+    }
     if ($recovery) {
         Send-Event "log" "Windows-only recovery: workflow branch $Ref; existing tag $Tag at $sourceSha. macOS is not requested; the tag is preserved."
     } elseif ($existingTag) {
@@ -204,7 +225,10 @@ try {
                 $_.event -in @('push', 'workflow_dispatch') -and
                 ($_.status -ne 'completed' -or $_.conclusion -eq 'success')
             })
-            if ($matching.Count) {
+            if ($draftMode -and @($matching | Where-Object { $_.status -ne 'completed' }).Count) {
+                throw 'A workflow run is already active for this tag and commit. Inspect it before requesting another draft build.'
+            }
+            if ($matching.Count -and -not $draftMode) {
                 Send-Event 'link' "$($workflow.file): already started or completed successfully" $matching[0].html_url
                 $tracked++
                 Send-Run $workflow.file $matching[0].id $matching[0].html_url ''
@@ -221,6 +245,13 @@ try {
             $body = @{ ref = $runRef }
             if ($TagInput) { $body.inputs = @{ $TagInput = $Tag } }
             if ($recovery) { $body.inputs.recovery = $true; $body.inputs.source_sha = $sourceSha }
+            if ($draftMode) {
+                $body.inputs.sharded = $BuildMode -eq 'windows_sharded'
+                $body.inputs.source_sha = $sourceSha
+                $body.inputs.recovery = $false
+                $body.inputs.diagnostic_only = $false
+                $body.inputs.test_release = $false
+            }
             $requestedAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
             $result = Invoke-GitHub "actions/workflows/$($workflow.id)/dispatches" 'POST' $body
             $runUrl = "https://github.com/$Repository/actions/workflows/$($workflow.file)"
@@ -235,7 +266,7 @@ try {
             Send-Event 'error' "$($workflow.file): $($_.Exception.Message) Tag retained. Retry to start any missing workflow."
         }
     }
-    if ($tracked -gt 0) { Send-Event 'link' 'Release page (assets appear after the workflows publish them)' "https://github.com/$Repository/releases/tag/$encodedTag" }
+    if ($tracked -gt 0) { Send-Event 'link' $(if ($draftMode) { 'Draft release: review after all checks and signing finish (not published)' } else { 'Release page (assets appear after the workflows finish)' }) "https://github.com/$Repository/releases/tag/$encodedTag" }
     if ($failed) { throw "$failed workflow request(s) failed. Other workflow requests may have succeeded." }
     Send-Event 'log' 'Workflow dispatch finished. Build completion is not yet confirmed.'
 } catch {

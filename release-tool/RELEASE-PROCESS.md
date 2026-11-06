@@ -1,5 +1,11 @@
 # General release process
 
+## Vault Spend hosted draft pipeline
+
+Choose **Windows: sharded draft** (or **Windows: serial draft** for fallback), the pushed release branch and a matching production tag. The remote workflow runs all gates, packages and signs into an unpublished draft. The tool tracks required jobs and verifies draft asset presence at the pinned tag. Approve the `release-signing` environment on GitHub; publishing is a separate owner action. macOS is deliberately not dispatched until its draft policy is migrated. Do not use the generic local publishing recipe below as a substitute for this hosted acceptance path. See the [draft mode instructions](README.md#vault-spend-hosted-windows-draft).
+
+## Profile-driven local publishing
+
 Every repository supplies a reviewed application profile. No application name, toolchain, changelog format, signing policy or asset count is assumed.
 
 1. Select the target repository, local clone, profile, stable `vX.Y.Z` tag and release notes.

@@ -1,5 +1,5 @@
 # Offline integration fixture: no GitHub requests and no real credentials.
-param([ValidateSet('new', 'same', 'different', 'missing', 'partial', 'automatic', 'annotated', 'repository404', 'failed', 'bothfail', 'error422', 'push', 'recovery')][string]$Scenario = 'new')
+param([ValidateSet('new', 'same', 'different', 'missing', 'partial', 'automatic', 'annotated', 'repository404', 'failed', 'bothfail', 'error422', 'push', 'recovery', 'draft', 'draftmissing', 'draftpublishing', 'draftreuse', 'draftactive', 'draftmac')][string]$Scenario = 'new')
 $global:releaseMockScenario = $Scenario
 $global:releaseMockCalls = [Collections.Generic.List[object]]::new()
 function Invoke-RestMethod {
@@ -7,7 +7,7 @@ function Invoke-RestMethod {
     if ($Headers.Authorization -ne 'Bearer offline-secret') { throw 'Unexpected authentication' }
     $global:releaseMockCalls.Add(@{ uri = $Uri; method = $Method; body = $Body })
     $path = ([Uri]$Uri).AbsolutePath
-    if ($path -eq '/repos/owner/repo') {
+    if ($path -in @('/repos/owner/repo', '/repos/OneTrueAsian/vault-spend')) {
         if ($global:releaseMockScenario -eq 'repository404') {
             $ex = [Exception]::new('missing')
             $ex | Add-Member NoteProperty Response ([pscustomobject]@{ StatusCode = 404 })
@@ -17,7 +17,7 @@ function Invoke-RestMethod {
     }
     if ($path -eq '/repos/owner/repo/') { throw 'Repository URL must not have a trailing slash' }
     if ($path.Contains('/branches/') -and $global:releaseMockScenario -eq 'recovery') { return [pscustomobject]@{ commit = @{ sha = 'def456' } } }
-    if ($path.Contains('/branches/')) { return [pscustomobject]@{ commit = @{ sha = 'abc123' } } }
+    if ($path.Contains('/branches/')) { return [pscustomobject]@{ commit = @{ sha = $(if ($Scenario.StartsWith('draft')) { 'a' * 40 } else { 'abc123' }) } } }
     if ($path.Contains('/git/ref/tags/')) {
         if ($global:releaseMockScenario -eq 'new') {
             $ex = [Exception]::new('missing')
@@ -25,12 +25,15 @@ function Invoke-RestMethod {
             throw $ex
         }
         $type = if ($global:releaseMockScenario -eq 'annotated') { 'tag' } else { 'commit' }
-        $sha = if ($global:releaseMockScenario -eq 'different') { 'other-commit' } else { 'abc123' }
+        $sha = if ($global:releaseMockScenario -eq 'different') { 'other-commit' } elseif ($Scenario.StartsWith('draft')) { 'a' * 40 } else { 'abc123' }
         return [pscustomobject]@{ object = [pscustomobject]@{ type = $type; sha = $sha } }
     }
     if ($path.Contains('/git/tags/')) { return [pscustomobject]@{ object = [pscustomobject]@{ type = 'commit'; sha = 'abc123' } } }
     if ($path.EndsWith('/git/refs')) { return [pscustomobject]@{ ref = 'refs/tags/v1.2.3' } }
     if ($path.EndsWith('/runs')) {
+        if ($Scenario -in @('draftreuse', 'draftactive')) {
+            return [pscustomobject]@{ workflow_runs = @([pscustomobject]@{ id = 99; head_branch = 'v1.2.3'; head_sha = ('a' * 40); event = 'workflow_dispatch'; status = $(if ($Scenario -eq 'draftactive') { 'in_progress' } else { 'completed' }); conclusion = 'success'; html_url = 'https://github.com/owner/repo/actions/runs/99' }) }
+        }
         if ($global:releaseMockScenario -eq 'automatic' -and $path.Contains('/22/')) {
             return [pscustomobject]@{ workflow_runs = @([pscustomobject]@{
                 id = 22; head_branch = 'v1.2.3'; head_sha = 'abc123'; event = 'push'; status = 'in_progress'; conclusion = $null
@@ -57,6 +60,11 @@ function Invoke-RestMethod {
     if ($path.Contains('/contents/')) {
         $text = if ($global:releaseMockScenario -eq 'missing' -and $path.Contains('build-macos')) { "on:`n  push:" } else { "run-name: Recover Windows `${{ inputs.tag }}`non:`n  workflow_dispatch:`n    inputs:`n      tag:`n      recovery:`n      source_sha:" }
         if ($global:releaseMockScenario -eq 'push') { $text += "`n  push:`n    tags:`n      - v*" }
+        if ($Scenario.StartsWith('draft')) {
+            $text += "`n      sharded:`n      diagnostic_only:`n      test_release:`njobs:`n  release:`n    steps:`n      - uses: tauri-apps/tauri-action@v0`n        with:`n          releaseDraft: true"
+            if ($Scenario -eq 'draftmissing') { $text = $text.Replace('      source_sha:', '      another_input:') }
+            if ($Scenario -eq 'draftpublishing') { $text = $text.Replace('releaseDraft: true', 'releaseDraft: false') }
+        }
         return [pscustomobject]@{ content = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($text)) }
     }
     if ($path.Contains('/actions/workflows/')) {

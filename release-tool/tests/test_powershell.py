@@ -10,6 +10,48 @@ import release_ui
 
 
 class PowerShellIntegrationTests(unittest.TestCase):
+    def test_sharded_draft_dispatches_only_windows_with_exact_source_and_safe_flags(self):
+        result, events, posts = self.scenario('draft', build_mode='windows_sharded', mac_workflow='')
+        self.assertEqual(result.returncode, 0, events)
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(json.loads(posts[0]['body']), {'ref': 'v1.2.3', 'inputs': {
+            'tag': 'v1.2.3', 'source_sha': 'a' * 40, 'sharded': True,
+            'recovery': False, 'diagnostic_only': False, 'test_release': False}})
+        calls = next(e['calls'] for e in events if e['kind'] == 'test_calls')
+        self.assertFalse(any('build-macos' in c['uri'] for c in calls))
+
+    def test_serial_draft_has_explicit_false_sharded_input(self):
+        result, events, posts = self.scenario('draft', build_mode='windows_serial_draft', mac_workflow='')
+        self.assertEqual(result.returncode, 0, events)
+        self.assertIs(json.loads(posts[0]['body'])['inputs']['sharded'], False)
+
+    def test_draft_refuses_incompatible_workflows_and_test_tags_before_mutation(self):
+        for scenario, changes in [('draftmissing', {}), ('draftpublishing', {}),
+                                  ('draft', {'tag': 'v1.3.92'}), ('draft', {'tag_input': ''})]:
+            result, events, posts = self.scenario(scenario, build_mode='windows_sharded', mac_workflow='', **changes)
+            self.assertEqual(result.returncode, 1, events)
+            self.assertEqual(posts, [])
+
+    def test_draft_does_not_reuse_a_same_commit_run_of_unknown_gate_mode(self):
+        result, events, posts = self.scenario('draftreuse', build_mode='windows_sharded', mac_workflow='')
+        self.assertEqual(result.returncode, 0, events)
+        self.assertEqual(len(posts), 1)
+        run = next(e for e in events if e['kind'] == 'run')
+        self.assertIn(99, run['previous_run_ids'])
+        self.assertNotEqual(run['run_id'], 99)
+
+    def test_legacy_both_mode_cannot_dispatch_macos_alongside_windows_draft(self):
+        result, events, posts = self.scenario('draftmac')
+        self.assertEqual(result.returncode, 1, events)
+        self.assertEqual(posts, [])
+        self.assertTrue(any('publish before review' in e.get('message', '') for e in events))
+
+    def test_active_draft_run_is_not_dispatched_twice(self):
+        result, events, posts = self.scenario('draftactive', build_mode='windows_sharded', mac_workflow='')
+        self.assertEqual(result.returncode, 1, events)
+        self.assertEqual(posts, [])
+        self.assertTrue(any('already active' in e.get('message', '') for e in events))
+
     def scenario(self, name, **changes):
         command = release_ui.powershell_command()
         command[-2:] = [str(Path(__file__).with_name('mock_release.ps1')), '-Scenario', name]
@@ -44,6 +86,25 @@ class PowerShellIntegrationTests(unittest.TestCase):
             result, events, posts = self.scenario('new', build_mode='windows_recovery', **changes)
             self.assertEqual(result.returncode, 1)
             self.assertEqual(posts, [])
+
+    def test_vault_spend_reserved_test_versions_are_refused_before_any_remote_change(self):
+        for build_mode, mac_workflow in (('both', 'build-macos.yml'), ('windows_recovery', '')):
+            for tag in ('v1.3.90', 'v1.3.95', 'v1.3.99', 'v1.3.095', 'v01.3.95'):
+                with self.subTest(build_mode=build_mode, tag=tag):
+                    result, events, posts = self.scenario('new', repository='OneTrueAsian/vault-spend', tag=tag,
+                                                          build_mode=build_mode, mac_workflow=mac_workflow)
+                    self.assertEqual(result.returncode, 1, events)
+                    self.assertEqual(posts, [])
+                    self.assertTrue(any('reserved test version' in e.get('message', '') for e in events), events)
+
+    def test_reserved_band_is_only_vault_spends_and_supported_versions_still_release(self):
+        for repository, tag in (('OneTrueAsian/vault-spend', 'v1.3.89'), ('OneTrueAsian/vault-spend', 'v1.3.100'),
+                                ('OneTrueAsian/vault-spend', 'v1.3.3'), ('OneTrueAsian/vault-spend', 'v1.4.95'),
+                                ('owner/repo', 'v1.3.95')):
+            with self.subTest(repository=repository, tag=tag):
+                result, events, posts = self.scenario('new', repository=repository, tag=tag)
+                self.assertEqual(result.returncode, 0, events)
+                self.assertEqual(len(posts), 3)
 
     def test_new_tag_pins_both_workflows_to_same_commit(self):
         result, events, posts = self.scenario('new')
