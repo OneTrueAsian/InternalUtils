@@ -24,7 +24,29 @@ The tool pins `source_sha` to the pushed commit and dispatches `sharded=true`, `
 
 Activity shows build, Rust checks, other checks, six shards, aggregation, packaging and signing job/step changes. The monitor waits through GitHub's protected signing approval; approve it on GitHub when ready. GitHub's run status can lag behind its jobs, so a run that reports success while any job still shows as running is not accepted: Activity names the jobs it is waiting for, once, and keeps checking (if they never settle, monitoring ends as 'not confirmed' with a link to the run, never as success). For the sharded draft the run's own gate summary (the `sharded-gate-summary-<attempt>` artifact) must also exist, unexpired and nonempty, for that exact run, attempt and commit. A required job that was skipped, cancelled or failed is never accepted, and nothing is ever re-run or cancelled by the tool. A successful run is accepted only after all required jobs succeeded and the authenticated draft contains nonempty EXE/MSI installers and their manifest/signature companions at the requested tag commit. Vault Spend filenames must match the requested version. This is a metadata/presence check, not independent cryptographic verification of downloaded assets; the workflow owns digest/signature verification.
 
-Completion says **Windows draft ready for review · not published**. Publication remains a separate owner action. No macOS workflow is dispatched: the current `build-macos.yml` can publish the shared release before Windows review. The legacy Windows + macOS mode refuses pairing a draft-producing Windows workflow with macOS. Migrate and validate the macOS draft policy separately before a combined release.
+Completion says **Windows draft ready for review · not published**. Publication remains a separate owner action. The Windows-only draft modes never dispatch macOS. The legacy **Windows + macOS** mode still refuses to pair a draft-producing Windows workflow with macOS, because macOS must not start alongside Windows: use the complete-draft modes below.
+
+### Vault Spend: complete draft (Windows first, then macOS)
+
+Select **Windows + macOS: sharded draft** (or **Windows + macOS: serial draft**), and fill **macOS workflow** (`build-macos.yml`) beside the Windows workflow. The tool inspects the macOS workflow at the source commit and refuses, before any tag is created, unless it follows the draft policy: it joins the existing draft by release id, keeps it a draft, and runs the release check (Vault Spend's `build-macos.yml` after VS-20). A workflow that creates or publishes its own release is never dispatched against a draft.
+
+What happens, in order, and what Activity and the status line say at each point:
+
+1. **Building**: the Windows gate, packaging and signing run, with the same job tracking, gate-summary evidence and sanitization as the Windows-only draft modes.
+2. **Waiting for signing approval**: a protected job is waiting. Approve the `release-signing` environment yourself on GitHub; the tool only shows the wait and never approves, bypasses or automates it.
+3. **Windows draft ready · not published**: only after the Windows run succeeded with every required job and the draft was read again with authentication: exactly one unpublished production release for the tag, at the tested source commit, holding Windows' installers with nonempty signed manifests and signatures. The release id is recorded.
+4. **macOS running**: only then is macOS dispatched, for the same tag, source commit and recorded release id. It builds, then waits for its own signing approval (shown the same way).
+5. **Complete draft ready for review · not published**: only after the macOS run succeeded with both of its jobs and the draft was read again: the same release id, still a draft, Windows' files plus the macOS DMG, manifest and signature, all nonempty.
+
+If Windows fails, macOS is not requested. If any run cannot be read or monitoring times out or is stopped, the result is shown as **not confirmed** with a link, never as success or as a ready draft. A green run whose draft does not verify (partial files, another release, a moved tag) is a failure. Nothing here publishes, approves, deletes, replaces or cancels anything.
+
+**Recovery.** Run the same mode again; the tool reconciles what exists before dispatching anything. A complete Windows draft resumes at macOS without running Windows again. A complete draft is only verified. macOS files already present are never dispatched again and never replaced; partial macOS files, a published release, several releases for the tag, a moved tag or a branch that no longer points at the tag stop the run with the reason and the safe next step (inspect the run on GitHub; remove partial macOS files yourself if you decide to). An active macOS run is tracked, not duplicated, and a completed green macOS run that left no macOS files is reported, not repeated.
+
+### Local: Windows-only unsigned draft
+
+**Local: Windows-only unsigned draft** (mode `local_draft`) runs the same preparation, gates, commit/merge/push and local Windows build as **Local: full release**, then creates an **unpublished draft** instead of publishing. GitHub creates the tag only when you publish. The tool verifies it as a draft (one unpublished production release at the recorded commit holding exactly the configured nonempty assets; no tag or a tag at that commit; `releases/latest` is not this version) and says **Windows-only unsigned draft ready · not published**. That check is metadata inspection (file names, sizes, target commit, draft state and tag state read from GitHub); it does not verify any signature or digest. macOS and post-release workflows are not requested in this mode: they need the tag, and Vault Spend's macOS step needs Windows' signed set from the hosted pipeline. Use the hosted complete-draft mode for a draft with macOS. The installers are built on this computer, so the draft has **no signing manifests or signatures** from the hosted pipeline: it is a Windows-only unsigned draft, not a complete release, and is not eligible for macOS. **Local: full release** is unchanged and still publishes by design.
+
+> **Vault Spend restriction (VS-21 audit; owner decision of 6 November 2026, implemented).** For `OneTrueAsian/vault-spend` the tool refuses **Local: full release** and **Local: Windows existing tag**; other applications and the labelled **Local: Windows-only unsigned draft** are unchanged. The reason: **Local: full release** publishes the locally built installers as `releases/latest` immediately (`gh release create ... --latest`). Vault Spend's `release-windows.yml` refuses a tag that already has a release, so the signed Windows files (manifests and signatures) can never be added afterwards; if the profile lists them in `signed_update_assets` the tool then reports failure only after the release is public, and if it does not list them the tool reports success for a release that lacks them. **Local: Windows existing tag** would add unsigned installers to a published release. Use the hosted complete-draft modes for Vault Spend.
 
 Draft dispatches do not reuse an old same-commit workflow run, whose inputs may have selected a different gate. Diagnose failures before retrying. A populated existing draft may be refused by the workflow; inspect it and select a new version/source as appropriate. The tool never deletes drafts, replaces assets or moves tags to recover automatically.
 
@@ -102,8 +124,12 @@ Current limits: local builds run on Windows; local-release tags use stable `vX.Y
 
 ## Verification
 
-```powershell
-python -m unittest discover -s release-tool/tests -v
+From Git Bash, in the InternalUtils repository root (the command used for the recorded evidence):
+
 ```
+cd /e/misc/Programming/InternalUtils && python -B -m unittest discover -s release-tool/tests -v
+```
+
+From PowerShell: `python -B -m unittest discover -s release-tool/tests -v`. The tool starts Windows PowerShell 5.1 without a PowerShell 7 `PSModulePath` (`release_ui.powershell_environment`), so this also works from a PowerShell 7 session; before that fix the dispatcher tests failed there with "module Microsoft.PowerShell.Security could not be loaded".
 
 Tests use temporary fixtures and fake GitHub responses. They verify orchestration, metadata adapters, asset checks, failure handling and UI behavior; they do not publish a release or validate your application's build environment.

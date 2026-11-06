@@ -44,13 +44,118 @@ class PowerShellIntegrationTests(unittest.TestCase):
         result, events, posts = self.scenario('draftmac')
         self.assertEqual(result.returncode, 1, events)
         self.assertEqual(posts, [])
-        self.assertTrue(any('publish before review' in e.get('message', '') for e in events))
+        self.assertTrue(any('wait until Windows has finished and signed' in e.get('message', '') for e in events))
 
     def test_active_draft_run_is_not_dispatched_twice(self):
         result, events, posts = self.scenario('draftactive', build_mode='windows_sharded', mac_workflow='')
         self.assertEqual(result.returncode, 1, events)
         self.assertEqual(posts, [])
         self.assertTrue(any('already active' in e.get('message', '') for e in events))
+
+    # ---- Windows phase of the Windows + macOS draft modes: macOS is validated but never dispatched here ----
+    def test_windows_phase_validates_the_macos_workflow_but_dispatches_only_windows(self):
+        result, events, posts = self.scenario('draftmacA', build_mode='windows_sharded', include_macos=True)
+        self.assertEqual(result.returncode, 0, events)
+        self.assertEqual(len(posts), 1)
+        self.assertIn('/11/dispatches', posts[0]['uri'])
+        calls = next(e['calls'] for e in events if e['kind'] == 'test_calls')
+        self.assertTrue(any('build-macos.yml' in c['uri'] and 'contents' in c['uri'] for c in calls), 'the macOS workflow was inspected at the source commit')
+        self.assertFalse(any('/22/dispatches' in c['uri'] for c in calls))
+        self.assertTrue(any('macOS will be added' in e.get('message', '') for e in events), events)
+
+    def test_a_macos_workflow_without_the_draft_contract_is_refused_before_any_change(self):
+        result, events, posts = self.scenario('draftmacAlegacy', build_mode='windows_sharded', include_macos=True)
+        self.assertEqual(result.returncode, 1, events)
+        self.assertEqual(posts, [])
+        self.assertTrue(any('draft policy' in e.get('message', '') for e in events), events)
+
+    def test_the_legacy_both_mode_still_refuses_to_run_macos_alongside_a_windows_draft_and_points_to_the_new_mode(self):
+        result, events, posts = self.scenario('draftmac')
+        self.assertEqual(result.returncode, 1, events)
+        self.assertEqual(posts, [])
+        self.assertTrue(any('Windows + macOS' in e.get('message', '') and 'draft' in e.get('message', '') for e in events), events)
+
+    # ---- macOS phase: joins the finished Windows draft by release id; every doubt stops it before a dispatch ----
+    def macos(self, name, **changes):
+        request = dict(build_mode='macos_draft', source_sha='a' * 40, release_id=77)
+        request.update(changes)
+        return self.scenario(name, **request)
+
+    def test_macos_is_dispatched_once_for_the_exact_tag_after_every_check_passes(self):
+        result, events, posts = self.macos('mbok')
+        self.assertEqual(result.returncode, 0, events)
+        self.assertEqual(len(posts), 1)
+        self.assertIn('/22/dispatches', posts[0]['uri'])
+        self.assertEqual(json.loads(posts[0]['body']), {'ref': 'v1.2.3', 'inputs': {'tag': 'v1.2.3'}})
+        run = next(e for e in events if e['kind'] == 'run')
+        self.assertEqual((run['workflow'], run['head_sha'], run['source_sha'], run['run_id'], run['run_ref']), ('build-macos.yml', 'a' * 40, 'a' * 40, 200, 'v1.2.3'))
+        self.assertFalse(any(c['method'] not in ('GET', 'POST') for c in next(e['calls'] for e in events if e['kind'] == 'test_calls')))
+
+    def test_every_doubt_about_the_draft_stops_macos_before_a_dispatch(self):
+        cases = {'mbpublished': 'published', 'mbprerelease': 'prerelease', 'mbwrongid': 'different release', 'mbdup': 'exactly one',
+                 'mbunsigned': 'signed set|Windows', 'mbtagmoved': 'no longer points', 'mblegacy': 'draft policy'}
+        for name, pattern in cases.items():
+            with self.subTest(name):
+                result, events, posts = self.macos(name)
+                self.assertEqual(result.returncode, 1, events)
+                self.assertEqual(posts, [], 'no dispatch of any kind')
+                self.assertRegex(' '.join(e.get('message', '') for e in events), pattern)
+
+    def test_inputs_that_would_bind_macos_to_nothing_are_refused(self):
+        for changes in (dict(source_sha=''), dict(source_sha='main'), dict(release_id=0), dict(release_id=None), dict(tag='latest'), dict(mac_workflow='bad name.yml'), dict(tag_input='')):
+            with self.subTest(**changes):
+                result, events, posts = self.macos('mbok', **changes)
+                self.assertEqual(result.returncode, 1, events)
+                self.assertEqual(posts, [])
+
+    def test_macos_files_already_in_the_draft_are_never_dispatched_again(self):
+        result, events, posts = self.macos('mbassets')
+        self.assertEqual(result.returncode, 0, events)
+        self.assertEqual(posts, [])
+        self.assertFalse([e for e in events if e['kind'] == 'run'])
+        self.assertTrue(any('already' in e.get('message', '') for e in events), events)
+
+    def test_partial_macos_files_are_reported_with_a_safe_next_step_and_nothing_is_dispatched(self):
+        result, events, posts = self.macos('mbpartial')
+        self.assertEqual(result.returncode, 1, events)
+        self.assertEqual(posts, [])
+        message = ' '.join(e.get('message', '') for e in events)
+        self.assertIn('partly', message)
+        self.assertIn('never deletes', message)
+
+    def test_a_macos_run_already_active_is_tracked_not_duplicated(self):
+        result, events, posts = self.macos('mbactive')
+        self.assertEqual(result.returncode, 0, events)
+        self.assertEqual(posts, [])
+        run = next(e for e in events if e['kind'] == 'run')
+        self.assertEqual(run['run_id'], 88)
+
+    def test_a_completed_green_macos_run_without_macos_files_is_not_started_again(self):
+        result, events, posts = self.macos('mbsuccessrun')
+        self.assertEqual(result.returncode, 1, events)
+        self.assertEqual(posts, [])
+        self.assertTrue(any('already completed' in e.get('message', '') for e in events), events)
+
+    def test_a_failed_earlier_macos_run_only_warns(self):
+        result, events, posts = self.macos('mbfailedrun')
+        self.assertEqual(result.returncode, 0, events)
+        self.assertEqual(len(posts), 1)
+        self.assertTrue(any('previously failed' in e.get('message', '') for e in events), events)
+
+    def test_the_release_list_is_paginated_so_a_draft_on_a_later_page_is_found(self):
+        result, events, posts = self.macos('mbpages')
+        self.assertEqual(result.returncode, 0, events)
+        self.assertEqual(len(posts), 1)
+        calls = next(e['calls'] for e in events if e['kind'] == 'test_calls')
+        self.assertTrue(any('releases?per_page=100&page=2' in c['uri'] for c in calls))
+
+    def test_vault_spend_reserved_versions_are_refused_in_the_macos_phase_too(self):
+        for tag in ('v1.3.90', 'v1.3.95', 'v1.3.095'):
+            with self.subTest(tag):
+                result, events, posts = self.macos('mbok', repository='OneTrueAsian/vault-spend', tag=tag)
+                self.assertEqual(result.returncode, 1, events)
+                self.assertEqual(posts, [])
+                self.assertTrue(any('reserved test version' in e.get('message', '') for e in events), events)
 
     def scenario(self, name, **changes):
         command = release_ui.powershell_command()
@@ -59,7 +164,7 @@ class PowerShellIntegrationTests(unittest.TestCase):
                        windows_workflow='release-windows.yml', mac_workflow='build-macos.yml', tag_input='tag')
         request.update(changes)
         result = subprocess.run(command, input=json.dumps(request) + '\n', text=True,
-                                encoding='utf-8', capture_output=True, timeout=30,
+                                encoding='utf-8', capture_output=True, timeout=30, env=release_ui.powershell_environment(command[0]),
                                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         self.assertNotIn('offline-secret', result.stdout + result.stderr)
         self.assertFalse(result.stderr, result.stderr)
@@ -182,7 +287,7 @@ class PowerShellIntegrationTests(unittest.TestCase):
             request = dict(repository='invalid', ref='', tag='', token='offline-secret',
                            windows_workflow='release-windows.yml', mac_workflow='build-macos.yml', tag_input='tag')
             result = subprocess.run(command, input=json.dumps(request) + '\n', text=True,
-                                    encoding='utf-8', capture_output=True, timeout=15,
+                                    encoding='utf-8', capture_output=True, timeout=15, env=release_ui.powershell_environment(command[0]),
                                     creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             self.assertEqual(result.returncode, 1)
             self.assertFalse(result.stderr, result.stderr)

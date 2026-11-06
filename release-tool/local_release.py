@@ -22,7 +22,7 @@ from release_errors import ReleaseError, CommandError, inside, reserved_test_ver
 from release_metadata import check_versions, prepare_versions, product_name, changelog_entry, custom_versions
 
 HERE = Path(__file__).resolve().parent
-LOCAL_MODES = ("local_release", "local_windows")
+LOCAL_MODES = ("local_release", "local_windows", "local_draft")
 
 
 def load_profile(path):
@@ -90,11 +90,15 @@ def validate_local_request(request):
         raise ReleaseError("Choose an existing local application repository folder.")
     if request.get("build_mode") not in LOCAL_MODES:
         raise ReleaseError("Choose a local release mode.")
+    if request["repository"].lower() == "onetrueasian/vault-spend" and request["build_mode"] in ("local_release", "local_windows"):
+        raise ReleaseError("Vault Spend does not use this local mode: it publishes (or adds unsigned installers to) a public release, and the signed Windows files can only come from the hosted pipeline, "
+                           "which refuses a tag that already has a release. Choose Windows + macOS: sharded draft (or Windows: sharded draft).")
     profile = load_profile(request.get("app_profile", ""))
-    if request["build_mode"] == "local_release":
+    if request["build_mode"] in ("local_release", "local_draft"):
         notes = Path(request.get("notes_file", "")).expanduser()
         if not request.get("notes_file") or not notes.is_file() or not notes.read_text(encoding="utf-8").strip():
             raise ReleaseError("Choose a nonempty Markdown release-notes file for a new release.")
+    if request["build_mode"] == "local_release":
         if profile["mac_assets"] and not re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.-]*\.ya?ml", request.get("mac_workflow", "")):
             raise ReleaseError("Choose the macOS release workflow filename.")
         if profile["mac_assets"] and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", request.get("tag_input", "")):
@@ -331,6 +335,39 @@ def verify_release(runner, repository, tag, sha, expected, latest=False):
     return release
 
 
+def find_tag_releases(runner, repository, tag):
+    """Every release for the tag, drafts included. The by-tag lookup never returns a draft, so this lists with authentication, page by page."""
+    found = []
+    for page in range(1, 101):
+        batch = runner.api(repository, f"releases?per_page=100&page={page}") or []
+        found.extend(item for item in batch if item.get("tag_name") == tag)
+        if len(batch) < 100:
+            return found
+    raise ReleaseError("Release listing exceeded the verification limit; inspect the releases on GitHub.")
+
+
+def verify_draft_release(runner, repository, tag, sha, expected):
+    """Draft readiness, as distinct from publication: one unpublished production draft at the recorded commit holding exactly the configured nonempty files.
+    No tag exists yet (GitHub creates it when the owner publishes) or it already points at the recorded commit, and releases/latest is not this version."""
+    matches = find_tag_releases(runner, repository, tag)
+    if len(matches) != 1 or matches[0].get("draft") is not True or matches[0].get("prerelease") is not False:
+        raise ReleaseError("Expected exactly one unpublished draft for this tag, not a published release, a prerelease, or several releases; draft readiness is not verified.")
+    release = matches[0]
+    if release.get("target_commitish") != sha:
+        raise ReleaseError("The draft does not target the recorded release commit.")
+    names = [asset.get("name") for asset in release.get("assets", [])]
+    sizes = {asset.get("name"): asset.get("size", 0) for asset in release.get("assets", [])}
+    if len(names) != len(set(names)) or set(names) != set(expected) or any(sizes[name] <= 0 for name in names):
+        raise ReleaseError("The draft must contain exactly the configured nonempty release assets: " + ", ".join(expected))
+    tag_sha = remote_tag(runner, repository, tag)
+    if tag_sha not in (None, sha):
+        raise ReleaseError("A tag with this name now points at a different commit than the draft; tags are never moved.")
+    latest = runner.api(repository, "releases/latest", missing=True)
+    if latest and latest.get("tag_name") == tag:
+        raise ReleaseError("releases/latest points at this version, so it is published, not a draft.")
+    return release
+
+
 def check_profile_source(runner, profile, source):
     """Check required metadata in the actual source commit before switching or setup."""
     if profile["adapter"] == "custom":
@@ -358,7 +395,8 @@ def local_pipeline(request, events, stop=None, runner_factory=Runner, monitor=mo
     request["token"] = ""
     root = Path(request["local_repo"]).expanduser().resolve()
     runner = runner_factory(root, token, events, stop)
-    full = request["build_mode"] == "local_release"
+    drafting = request["build_mode"] == "local_draft"
+    full = request["build_mode"] in ("local_release", "local_draft")
     repository, tag = request["repository"], request["tag"]
     version = tag[1:]
     restore = None
@@ -374,8 +412,8 @@ def local_pipeline(request, events, stop=None, runner_factory=Runner, monitor=mo
             if full:
                 if existing_sha is not None:
                     raise ReleaseError("New release tag already exists. Use the local Windows existing-tag mode; tags are never moved.")
-                if runner.api(repository, "releases/tags/" + tag, missing=True) is not None:
-                    raise ReleaseError("A release with this tag already exists.")
+                if runner.api(repository, "releases/tags/" + tag, missing=True) is not None or (drafting and find_tag_releases(runner, repository, tag)):
+                    raise ReleaseError("A release with this tag already exists." + (" A draft counts too; the tool never replaces one." if drafting else ""))
                 check_profile_source(runner, profile, "HEAD")
                 branch = request.get("ref") or profile["release_branch"].format(version=version)
                 if branch == profile["default_branch"]:
@@ -433,9 +471,9 @@ def local_pipeline(request, events, stop=None, runner_factory=Runner, monitor=mo
                 runner.run([part.replace("{version}", version).replace("{tag}", tag) for part in command], retry=True)
             check_versions(root, profile, version)
             if full:
-                if profile["mac_assets"]:
+                if profile["mac_assets"] and not drafting:
                     check_dispatch_workflow(runner, root, repository, request["mac_workflow"], "macOS")
-                for item in profile["post_release_workflows"]:
+                for item in ([] if drafting else profile["post_release_workflows"]):
                     check_dispatch_workflow(runner, root, repository, item["workflow"], item["workflow"])
                 changed = set(runner.text(["git", "diff", "HEAD", "--name-only"]).splitlines())
                 if changed - set(release_files):
@@ -481,7 +519,7 @@ def local_pipeline(request, events, stop=None, runner_factory=Runner, monitor=mo
                 if current_latest:
                     require_newer_than_latest(repository, version, current_latest.get("tag_name", ""), "A newer release was published during the build. Publication stopped to avoid replacing releases/latest with an older version.")
                 runner.run(["gh", "release", "create", tag, *map(str, local_files), "--repo", repository, "--target", sha,
-                            "--title", f"{product} {version}", "--notes-file", str(notes_path), "--latest"])
+                            "--title", f"{product} {version}", "--notes-file", str(notes_path), "--draft" if drafting else "--latest"])
             else:
                 release = runner.api(repository, "releases/tags/" + tag, missing=True)
                 if release is None:
@@ -502,11 +540,18 @@ def local_pipeline(request, events, stop=None, runner_factory=Runner, monitor=mo
                     if profile.get("replace_windows_assets", False):
                         args.append("--clobber")
                     runner.run(args)
-            verify_release(runner, repository, tag, sha, windows)
-            runner.emit("status", "Windows: installers published", workflow=request.get("windows_workflow", "release-windows.yml"), state="completed", conclusion="success")
-            runner.emit("link", "Release page", url=f"https://github.com/{repository}/releases/tag/{tag}")
+            if drafting:
+                draft = verify_draft_release(runner, repository, tag, sha, windows)
+                runner.emit("status", "Windows: installers uploaded to the unsigned draft (not published)", workflow=request.get("windows_workflow", "release-windows.yml"), state="completed", conclusion="success")
+                url = draft.get("html_url", "")
+                runner.emit("link", "Windows-only unsigned draft (not published)", url=url if url.startswith(f"https://github.com/{repository}/releases/") else f"https://github.com/{repository}/releases")
+                runner.emit("log", "This is a Windows-only unsigned draft: the installers were built here, so it has no signing manifests or signatures from the hosted pipeline and is not eligible for macOS (Vault Spend's macOS step requires Windows' signed set). The checks above read file names, sizes, target and state from GitHub; they are metadata inspection, not a signature or digest check. Use Windows + macOS: sharded draft for a complete, signed draft.")
+            else:
+                verify_release(runner, repository, tag, sha, windows)
+                runner.emit("status", "Windows: installers published", workflow=request.get("windows_workflow", "release-windows.yml"), state="completed", conclusion="success")
+                runner.emit("link", "Release page", url=f"https://github.com/{repository}/releases/tag/{tag}")
             dispatches = ([(request["mac_workflow"], request["tag_input"], "macOS")] if mac else []) + [(item["workflow"], item["tag_input"], item["workflow"]) for item in profile["post_release_workflows"]]
-            if full and dispatches:
+            if full and not drafting and dispatches:
                 runs = []
                 for workflow, tag_input, label in dispatches:
                     query = f"actions/workflows/{workflow}/runs?head_sha={sha}&per_page=100"
@@ -522,13 +567,17 @@ def local_pipeline(request, events, stop=None, runner_factory=Runner, monitor=mo
                             runner.emit("log", f"To diagnose: gh run view {run['run_id']} --repo {repository} --log-failed. For a temporary failure: gh run rerun {run['run_id']} --repo {repository} --failed.")
                     raise ReleaseError("A GitHub release build did not complete successfully. Windows assets remain published; no release was withdrawn.")
             if full:
-                verify_release(runner, repository, tag, sha, windows + mac + signed_update_files(profile, product, version), latest=True)
+                if not drafting:
+                    verify_release(runner, repository, tag, sha, windows + mac + signed_update_files(profile, product, version), latest=True)
                 runner.run(["git", "fetch", "origin", "--tags"])
             if not full and restore:
                 tracked_changes(runner)
                 runner.run(restore, ignore_stop=True)
                 restore = None
-            runner.emit("done", f"Verified {tag} at {sha}: " + ", ".join(windows + mac + signed_update_files(profile, product, version) if full else windows))
+            if drafting:
+                runner.emit("done", f"Windows-only unsigned draft verified for {tag} at {sha}: " + ", ".join(windows) + " (file names, sizes, target and state only; no signature or digest check). Not published, not a complete release and not eligible for macOS; review the draft on GitHub, then publish it yourself only if you accept that.")
+            else:
+                runner.emit("done", f"Verified {tag} at {sha}: " + ", ".join(windows + mac + signed_update_files(profile, product, version) if full else windows))
             return True
         finally:
             if full and "notes_path" in locals():

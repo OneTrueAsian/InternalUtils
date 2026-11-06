@@ -30,6 +30,8 @@ class World:
         self.latest_tags = []
         self.fail_push = False
         self.tag_after_release = None
+        self.publish_after_create = False
+        self.drop_draft_asset = False
         self.signed_files = []
         self.runner = None
 
@@ -72,8 +74,14 @@ class World:
                         path.parent.mkdir(parents=True, exist_ok=True)
                         path.write_bytes(b'new installer')
                 if args[:3] == ['gh', 'release', 'create']:
-                    world.tag = world.tag_after_release or args[args.index('--target') + 1]
-                    world.release = dict(tag_name=args[3], draft=False, prerelease=False, assets=[dict(name=Path(name).name.replace(' ', '.'), size=13) for name in args[4:args.index('--repo')]])
+                    drafted = '--draft' in args
+                    uploaded = [dict(name=Path(name).name.replace(' ', '.'), size=13) for name in args[4:args.index('--repo')]]
+                    if world.drop_draft_asset:
+                        uploaded = uploaded[:-1]
+                    # A draft has no tag until it is published, and GitHub does not return it from the by-tag lookup.
+                    world.tag = world.tag_after_release or (None if drafted else args[args.index('--target') + 1])
+                    world.release = dict(tag_name=args[3], draft=drafted and not world.publish_after_create, prerelease=False, target_commitish=args[args.index('--target') + 1],
+                                         html_url='https://github.com/owner/app/releases/tag/untagged-1', assets=uploaded)
                 if args[:3] == ['gh', 'release', 'upload']:
                     paths = args[4:args.index('--repo')]
                     world.release['assets'].extend(dict(name=Path(name).name.replace(' ', '.'), size=13) for name in paths)
@@ -83,13 +91,15 @@ class World:
                 world.calls.append((['API', path], dict(body=body)))
                 if path.startswith('git/ref/tags/'):
                     return dict(object=dict(type='commit', sha=world.tag)) if world.tag else None
+                if path.startswith('releases?per_page=100&page='):
+                    return [world.release] if world.release and int(path.rsplit('=', 1)[1]) == 1 else []
                 if path.startswith('releases/tags/'):
-                    return world.release
+                    return None if world.release and world.release.get('draft') else world.release
                 if path == 'releases/latest':
                     if world.latest_tags:
                         tag = world.latest_tags.pop(0)
                         return dict(tag_name=tag, draft=False, prerelease=False, assets=[]) if tag else None
-                    if not world.release:
+                    if not world.release or world.release.get('draft'):
                         return None
                     return dict(world.release, tag_name='v0.9.0') if world.wrong_latest else world.release
                 if path.endswith('/dispatches'):
@@ -338,6 +348,20 @@ class LocalPipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(local.ReleaseError, r'x64_en-US\.msi\.manifest\.json'):
             self.execute()
 
+    def test_vault_spend_shaped_local_full_release_publishes_latest_first_then_fails_without_windows_signed_files(self):
+        """VS-21 audit. The hosted release-windows.yml refuses a tag that already has a release (assert-draft-release.mjs --stage before), so after the
+        local pipeline has published, the signed Windows files can never arrive. The fake hosted run adds none, as the real one would."""
+        self.enable_signing()
+        self.world.signed_files = []
+        with self.assertRaisesRegex(local.ReleaseError, r'missing expected nonempty assets.*manifest\.json'):
+            self.execute()
+        create = next(args for args in self.commands() if args[:3] == ['gh', 'release', 'create'])
+        self.assertIn('--latest', create)
+        self.assertNotIn('--draft', create)
+        self.assertFalse(self.world.release['draft'], 'already public when the failure is reported')
+        self.assertFalse([a['name'] for a in self.world.release['assets'] if a['name'].endswith(('.manifest.json', '.signature.json'))])
+        self.assertFalse(any(event['kind'] == 'done' for event in self.events.queue))
+
     def test_signed_files_are_not_required_when_the_profile_does_not_list_any(self):
         self.assertTrue(self.execute())
         self.assertEqual(len(self.world.release['assets']), 4)
@@ -401,7 +425,7 @@ class LocalPipelineTests(unittest.TestCase):
 
     def reserved_world(self, tag, mode='local_release'):
         self.request.update(repository='OneTrueAsian/vault-spend', tag=tag, build_mode=mode, token='offline-secret')
-        self.world = World(self.root, full=mode == 'local_release')
+        self.world = World(self.root, full=mode in ('local_release', 'local_draft'))
         self.world.origin = 'OneTrueAsian/vault-spend'
 
     def assert_nothing_prepared(self):
@@ -425,19 +449,20 @@ class LocalPipelineTests(unittest.TestCase):
         for repository, tag in [('OneTrueAsian/vault-spend', 'v1.3.89'), ('OneTrueAsian/vault-spend', 'v1.3.100'), ('OneTrueAsian/vault-spend', 'v1.3.3'),
                                 ('OneTrueAsian/vault-spend', 'v1.4.95'), ('OneTrueAsian/vault-spend', 'v1.2.95'), ('owner/app', 'v1.3.95'), ('someone/vault-spend', 'v1.3.95')]:
             with self.subTest(repository=repository, tag=tag):
-                local.validate_local_request(dict(self.request, repository=repository, tag=tag))
+                # Vault Spend's publishing local modes are refused outright (VaultSpendLocalRestrictionTests); its labelled draft mode still validates its versions.
+                local.validate_local_request(dict(self.request, repository=repository, tag=tag, build_mode='local_draft' if repository == 'OneTrueAsian/vault-spend' else self.request['build_mode']))
 
     def test_a_reserved_latest_release_is_refused_not_used_to_judge_what_is_newer(self):
         for tag in ('v1.3.4', 'v1.3.100'):
             with self.subTest(tag=tag):
-                self.reserved_world(tag)
+                self.reserved_world(tag, 'local_draft')
                 self.world.latest_tags = ['v1.3.95']
                 with self.assertRaisesRegex(local.ReleaseError, 'releases/latest points at v1.3.95.*reserved test version'):
                     self.execute()
                 self.assert_nothing_prepared()
 
     def test_a_reserved_release_appearing_as_latest_during_the_build_stops_publication(self):
-        self.reserved_world('v1.3.4')
+        self.reserved_world('v1.3.4', 'local_draft')
         self.world.latest_tags = [None, 'v1.3.95']
         with self.assertRaisesRegex(local.ReleaseError, 'releases/latest points at v1.3.95.*reserved test version'):
             self.execute()
@@ -474,6 +499,144 @@ class LocalPipelineTests(unittest.TestCase):
         self.profile.write_text(json.dumps(profile))
         with self.assertRaisesRegex(local.ReleaseError, 'argument arrays'):
             local.load_profile(self.profile)
+
+
+class VaultSpendLocalRestrictionTests(unittest.TestCase):
+    """Owner decision (6 November 2026): for OneTrueAsian/vault-spend, Local: full release and Local: Windows existing tag are refused. The first publishes at once and the hosted
+    signing job can never follow; the second uploads unsigned installers to a published release. Other apps and the labelled unsigned local draft are unchanged."""
+    def setUp(self):
+        LocalPipelineTests.setUp(self)
+
+    execute = LocalPipelineTests.execute
+    commands = LocalPipelineTests.commands
+
+    def vault(self, mode, repository='OneTrueAsian/vault-spend', tag='v1.3.4'):
+        self.request.update(repository=repository, tag=tag, build_mode=mode, token='offline-secret')
+        self.world = World(self.root, full=mode != 'local_windows')
+        self.world.origin = repository
+
+    def test_vault_spend_publishing_and_published_release_upload_modes_are_refused_before_any_work(self):
+        for mode in ('local_release', 'local_windows'):
+            for repository in ('OneTrueAsian/vault-spend', 'onetrueasian/Vault-Spend'):
+                with self.subTest(mode=mode, repository=repository):
+                    self.vault(mode, repository)
+                    with self.assertRaisesRegex(local.ReleaseError, 'Windows \+ macOS: sharded draft'):
+                        self.execute()
+                    self.assertEqual(self.world.calls, [])
+                    self.assertFalse(any(args[:3] == ['gh', 'release', 'create'] or args[:3] == ['gh', 'release', 'upload'] for args in self.commands()))
+
+    def test_the_message_names_the_reason_and_the_supported_path(self):
+        self.vault('local_release')
+        with self.assertRaises(local.ReleaseError) as error:
+            local.validate_local_request(dict(self.request))
+        text = str(error.exception)
+        self.assertIn('signed', text)
+        self.assertIn('Windows + macOS: sharded draft', text)
+
+    def test_the_unsigned_local_draft_stays_available_for_vault_spend(self):
+        self.vault('local_draft')
+        local.validate_local_request(dict(self.request))
+
+    def test_other_applications_keep_both_modes(self):
+        for mode in ('local_release', 'local_windows', 'local_draft'):
+            for repository in ('owner/app', 'someone/vault-spend', 'OneTrueAsian/vault-spend-tools'):
+                with self.subTest(mode=mode, repository=repository):
+                    self.request.update(repository=repository, build_mode=mode, token='offline-secret', tag='v1.3.4')
+                    local.validate_local_request(dict(self.request))
+
+    def test_the_reserved_version_message_still_comes_first(self):
+        self.vault('local_release', tag='v1.3.95')
+        with self.assertRaisesRegex(local.ReleaseError, 'reserved test version'):
+            local.validate_local_request(dict(self.request))
+
+
+class LocalDraftPipelineTests(unittest.TestCase):
+    """Local: draft release (VS-21): the same preparation, gates and local build as the full release, but the result is an unpublished draft that is verified as a draft.
+    The publishing mode (Local: full release) is untouched and covered above."""
+    def setUp(self):
+        LocalPipelineTests.setUp(self)
+        self.request['build_mode'] = 'local_draft'
+
+    execute = LocalPipelineTests.execute
+    commands = LocalPipelineTests.commands
+
+    def test_draft_is_created_unpublished_at_the_merge_sha_and_verified_as_a_draft(self):
+        self.assertTrue(self.execute())
+        create = next(args for args in self.commands() if args[:3] == ['gh', 'release', 'create'])
+        self.assertIn('--draft', create)
+        self.assertNotIn('--latest', create)
+        self.assertEqual(create[create.index('--target') + 1], 'b' * 40)
+        self.assertTrue(self.world.release['draft'])
+        self.assertIsNone(self.world.tag, 'no tag exists until the owner publishes')
+        self.assertEqual(len(self.world.release['assets']), 2)
+        text = str(list(self.events.queue))
+        self.assertIn('Windows-only unsigned draft verified', text)
+        self.assertIn('not published', text)
+        self.assertIn('no signature or digest check', text)
+        self.assertIn('not eligible for macOS', text)
+        self.assertIn('not a complete release', text)
+        self.assertNotIn('Complete draft', text)
+        self.assertNotIn('installers published', text)
+        self.assertNotIn('offline-secret', text)
+
+    def test_no_macos_or_post_release_workflow_is_dispatched_or_monitored_and_the_limit_is_said(self):
+        self.assertTrue(self.execute())
+        self.assertFalse(any(args[-1].endswith('/dispatches') or args[0] == 'MONITOR' for args in self.commands()))
+        self.assertIn('macOS', str([e.get('message') for e in self.events.queue if e['kind'] == 'log']))
+        self.assertEqual(self.request['token'], '')
+
+    def test_macos_workflow_fields_are_not_needed_for_a_draft(self):
+        self.request.update(mac_workflow='', tag_input='')
+        local.validate_local_request(dict(self.request, token='offline-secret'))
+
+    def test_an_existing_release_of_any_kind_for_the_tag_stops_before_building(self):
+        for release in (dict(tag_name='v1.0.1', draft=False, prerelease=False, assets=[]), dict(tag_name='v1.0.1', draft=True, prerelease=False, assets=[], target_commitish='c' * 40)):
+            self.setUp()
+            self.world.release = release
+            with self.subTest(draft=release['draft']), self.assertRaisesRegex(local.ReleaseError, 'already exists'):
+                self.execute()
+            self.assertNotIn(['npx', 'tauri', 'build'], self.commands())
+
+    def test_a_draft_that_was_published_meanwhile_is_not_reported_as_a_ready_draft(self):
+        self.world.publish_after_create = True
+        with self.assertRaisesRegex(local.ReleaseError, 'unpublished draft'):
+            self.execute()
+        self.assertNotIn('draft verified', str(list(self.events.queue)).lower())
+
+    def test_a_draft_missing_a_file_or_with_a_tag_created_elsewhere_fails_verification(self):
+        self.world.drop_draft_asset = True
+        with self.assertRaisesRegex(local.ReleaseError, 'exactly the configured'):
+            self.execute()
+        self.setUp()
+        self.world.tag_after_release = 'f' * 40
+        with self.assertRaisesRegex(local.ReleaseError, 'tag'):
+            self.execute()
+
+    def test_a_reserved_vault_spend_version_is_refused_before_anything_runs(self):
+        self.request.update(repository='OneTrueAsian/vault-spend', tag='v1.3.95')
+        with self.assertRaisesRegex(local.ReleaseError, 'reserved test version'):
+            self.execute()
+        self.assertEqual(self.commands(), [])
+
+    def test_a_release_that_is_not_newer_than_latest_still_stops_the_draft(self):
+        self.world.latest_tags = ['v1.0.1']
+        with self.assertRaisesRegex(local.ReleaseError, 'newer'):
+            self.execute()
+        self.assertNotIn(['npx', 'tauri', 'build'], self.commands())
+
+    def test_verify_draft_release_requires_one_unpublished_production_draft_at_the_sha_with_exactly_the_files(self):
+        def good(**over):
+            return dict(dict(tag_name='v1.0.1', draft=True, prerelease=False, target_commitish='a' * 40, html_url='https://github.com/owner/app/releases/tag/untagged-1',
+                             assets=[dict(name='A.exe', size=3), dict(name='B.msi', size=3)]), **over)
+        def check(releases, **kw):
+            runner = type('R', (), {'api': lambda self, repository, path, body=None, missing=False: (releases if path.startswith('releases?') and path.endswith('page=1') else [] if path.startswith('releases?') else None if path.startswith('git/ref') else None if missing else {})})()
+            return local.verify_draft_release(runner, 'owner/app', 'v1.0.1', kw.get('sha', 'a' * 40), ['A.exe', 'B.msi'])
+        self.assertEqual(check([good()])['tag_name'], 'v1.0.1')
+        for label, releases, kw in [('none', [], {}), ('two', [good(), good()], {}), ('published', [good(draft=False)], {}), ('prerelease', [good(prerelease=True)], {}),
+                                    ('other commit', [good()], {'sha': 'b' * 40}), ('empty file', [good(assets=[dict(name='A.exe', size=0), dict(name='B.msi', size=3)])], {}),
+                                    ('extra file', [good(assets=good()['assets'] + [dict(name='C.zip', size=3)])], {}), ('missing file', [good(assets=good()['assets'][:1])], {})]:
+            with self.subTest(label), self.assertRaises(local.ReleaseError):
+                check(releases, **kw)
 
 
 class RunnerTests(unittest.TestCase):

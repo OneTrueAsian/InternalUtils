@@ -31,11 +31,7 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def verify_windows_draft(repository, tag, source_sha, token, get=None):
-    """Check tag identity and draft asset presence; signing remains the workflow's gate."""
-    get = get or (lambda path: github_get(repository, path, token))
-    if not re.fullmatch(r"[0-9a-f]{40}", source_sha or ""):
-        raise RuntimeError("No exact source commit was recorded for the draft.")
+def _tag_commit(get, tag):
     obj = get("git/ref/tags/" + quote(tag, safe=""))["object"]
     for _ in range(8):
         if obj.get("type") == "commit":
@@ -43,17 +39,50 @@ def verify_windows_draft(repository, tag, source_sha, token, get=None):
         if obj.get("type") != "tag":
             raise RuntimeError("The release tag does not resolve to a commit.")
         obj = get("git/tags/" + quote(obj["sha"], safe=""))["object"]
-    if obj.get("type") != "commit" or obj.get("sha") != source_sha:
-        raise RuntimeError("The draft tag no longer matches the tested source commit.")
-    # List with authentication: drafts may not be returned by the public tag lookup.
+    if obj.get("type") != "commit":
+        raise RuntimeError("The release tag does not resolve to a commit.")
+    return obj.get("sha")
+
+
+def _releases_for_tag(get, tag):
+    """Every release (draft or published) for the tag, listed with authentication: drafts may not be returned by the public tag lookup."""
     matches = []
     for page in range(1, 101):
         releases = get(f"releases?per_page=100&page={page}")
         matches.extend(item for item in releases if item.get("tag_name") == tag)
         if len(releases) < 100:
-            break
-    else:
-        raise RuntimeError("Release listing exceeded the verification limit; inspect the draft manually.")
+            return matches
+    raise RuntimeError("Release listing exceeded the verification limit; inspect the draft manually.")
+
+
+def _windows_set_problems(repository, tag, assets):
+    """Why the Windows installers with their signed manifests and signatures are not all there (empty when they are)."""
+    installers = [item for item in assets if str(item.get("name", "")).lower().endswith((".exe", ".msi"))]
+    if not all(any(item["name"].lower().endswith(ext) for item in installers) for ext in (".exe", ".msi")):
+        return ["Draft is missing its Windows EXE or MSI installer."]
+    by_name = {item["name"]: item for item in assets}
+    if repository.lower() == "onetrueasian/vault-spend":
+        version = tag.removeprefix("v")
+        expected = {f"Vault.Spend_{version}_x64-setup.exe", f"Vault.Spend_{version}_x64_en-US.msi"}
+        if {item["name"] for item in installers} != expected:
+            return ["Draft Windows installer filenames do not match the requested Vault Spend version."]
+    problems = []
+    for installer in installers:
+        for suffix in ("", ".manifest.json", ".signature.json"):
+            asset = by_name.get(installer["name"] + suffix, {})
+            if not isinstance(asset.get("size"), int) or asset["size"] <= 0:
+                problems.append("Draft is missing a nonempty installer, manifest or signature: " + installer["name"] + suffix)
+    return problems
+
+
+def verify_windows_draft(repository, tag, source_sha, token, get=None):
+    """Check tag identity and draft asset presence; signing remains the workflow's gate."""
+    get = get or (lambda path: github_get(repository, path, token))
+    if not re.fullmatch(r"[0-9a-f]{40}", source_sha or ""):
+        raise RuntimeError("No exact source commit was recorded for the draft.")
+    if _tag_commit(get, tag) != source_sha:
+        raise RuntimeError("The draft tag no longer matches the tested source commit.")
+    matches = _releases_for_tag(get, tag)
     if len(matches) != 1 or matches[0].get("draft") is not True or matches[0].get("prerelease") is not False:
         raise RuntimeError("Expected one unpublished production draft, not a published release or test prerelease.")
     release = matches[0]
@@ -61,24 +90,109 @@ def verify_windows_draft(repository, tag, source_sha, token, get=None):
     names = [item.get("name") for item in assets]
     if len(names) != len(set(names)):
         raise RuntimeError("Draft has duplicate asset names.")
-    installers = [item for item in assets if str(item.get("name", "")).lower().endswith((".exe", ".msi"))]
-    if not all(any(item["name"].lower().endswith(ext) for item in installers) for ext in (".exe", ".msi")):
-        raise RuntimeError("Draft is missing its Windows EXE or MSI installer.")
-    by_name = {item["name"]: item for item in assets}
-    if repository.lower() == "onetrueasian/vault-spend":
-        version = tag.removeprefix("v")
-        expected = {f"Vault.Spend_{version}_x64-setup.exe", f"Vault.Spend_{version}_x64_en-US.msi"}
-        if {item["name"] for item in installers} != expected:
-            raise RuntimeError("Draft Windows installer filenames do not match the requested Vault Spend version.")
-    for installer in installers:
-        for suffix in ("", ".manifest.json", ".signature.json"):
-            asset = by_name.get(installer["name"] + suffix, {})
-            if not isinstance(asset.get("size"), int) or asset["size"] <= 0:
-                raise RuntimeError("Draft is missing a nonempty installer, manifest or signature: " + installer["name"] + suffix)
+    problems = _windows_set_problems(repository, tag, assets)
+    if problems:
+        raise RuntimeError(problems[0])
     url = release.get("html_url", "")
     if not url.startswith(f"https://github.com/{repository}/releases/"):
         raise RuntimeError("The draft has no valid repository release URL.")
     return url
+
+
+def _is_macos_asset(name):
+    return str(name).lower().endswith((".dmg", ".dmg.manifest.json", ".dmg.signature.json", ".app.tar.gz"))
+
+
+def draft_state(repository, tag, source_sha, token, get=None):
+    """Where the one shared release for this tag stands, read with authentication and bound to the tested source commit.
+
+    stage: none, windows_incomplete, windows_ready, macos_partial, complete, published or invalid. Nothing is ever substituted: a duplicate,
+    moved tag, test prerelease or unexpected file set is `invalid`. `next_step` says what is safe to do; the tool never deletes or replaces anything.
+    """
+    get = get or (lambda path: github_get(repository, path, token))
+
+    def result(stage, release=None, next_step="", problems=()):
+        url = (release or {}).get("html_url", "")
+        if not url.startswith(f"https://github.com/{repository}/releases/"):
+            url = ""
+        return {"stage": stage, "release_id": (release or {}).get("id"), "url": url, "problems": list(problems), "next_step": next_step}
+
+    if not re.fullmatch(r"[0-9a-f]{40}", source_sha or ""):
+        return result("invalid", problems=["No exact source commit was recorded for the draft."], next_step="Start again from a pushed release branch.")
+    commit = _tag_commit(get, tag)
+    if commit != source_sha:
+        return result("invalid", problems=["The release tag does not point at the tested source commit."], next_step="Tags are never moved. Inspect the tag; use a new version for different source.")
+    matches = _releases_for_tag(get, tag)
+    if not matches:
+        return result("none", next_step="No draft exists yet. The Windows workflow creates it; nothing has been published.")
+    if len(matches) > 1:
+        return result("invalid", problems=[f"There is more than one release for {tag}."], next_step="Inspect them on GitHub; the tool will not pick one. Delete extras only by deliberate owner action.")
+    release = matches[0]
+    if release.get("draft") is not True:
+        return result("published", release, "This release is already published. The draft flow does not touch published releases.", ["The release is published, not a draft."])
+    if release.get("prerelease") is not False:
+        return result("invalid", release, "A test prerelease is not a production draft.", ["The draft is marked prerelease."])
+    assets = release.get("assets", [])
+    names = [item.get("name") for item in assets]
+    if len(names) != len(set(names)):
+        return result("invalid", release, "Inspect the duplicate files on GitHub; nothing was changed.", ["Draft has duplicate asset names."])
+    mac_names = [name for name in names if _is_macos_asset(name)]
+    windows_problems = _windows_set_problems(repository, tag, assets)
+    if windows_problems and windows_problems[0].startswith("Draft Windows installer filenames do not match"):
+        return result("invalid", release, "These are not this version's installers. Inspect the draft; nothing was changed.", windows_problems)
+    if windows_problems:
+        if mac_names:
+            return result("invalid", release, "macOS files exist without Windows' complete signed set. Inspect the draft; nothing was changed.", windows_problems + ["macOS files are present without Windows' complete signed set."])
+        return result("windows_incomplete", release, "Windows' installers or signing files are not all there yet. Wait for the Windows workflow (including the signing approval) or inspect its run.", windows_problems)
+    if repository.lower() == "onetrueasian/vault-spend":
+        version = tag.removeprefix("v")
+        allowed = {f"Vault.Spend_{version}_universal.dmg", f"Vault.Spend_{version}_universal.dmg.manifest.json", f"Vault.Spend_{version}_universal.dmg.signature.json", "Vault.Spend_universal.app.tar.gz"}
+        unexpected = [name for name in mac_names if name not in allowed]
+        if unexpected:
+            return result("invalid", release, "Inspect these files on GitHub; nothing was changed.", ["Unexpected macOS file names: " + ", ".join(unexpected)])
+    if not mac_names:
+        return result("windows_ready", release, "Windows' signed draft is complete. macOS can now be added to this same draft.")
+    by_name = {item["name"]: item for item in assets}
+    dmgs = [name for name in names if name.lower().endswith(".dmg")]
+    core = [dmgs[0], dmgs[0] + ".manifest.json", dmgs[0] + ".signature.json"] if len(dmgs) == 1 else []
+    if core and all(isinstance(by_name.get(name, {}).get("size"), int) and by_name[name]["size"] > 0 for name in core):
+        return result("complete", release, "The draft holds Windows' and macOS's signed files. Review it on GitHub; publishing is a separate owner action.")
+    return result("macos_partial", release, "macOS files are only partly there. Do not start macOS again: it refuses to replace files. Inspect the run, and delete the partial macOS files by deliberate owner action before one new attempt.", ["The macOS DMG, manifest and signature are not all present and nonempty."])
+
+
+def existing_draft_state(repository, tag, ref, token, get=None):
+    """For resuming: None when no release exists for the tag, otherwise its state at the tag's own commit, and whether the selected branch still points there."""
+    get = get or (lambda path: github_get(repository, path, token))
+    matches = _releases_for_tag(get, tag)
+    if not matches:
+        return None
+    try:
+        source_sha = _tag_commit(get, tag)
+    except RuntimeError:
+        # A release (for example a local draft) exists but the tag does not: there is no commit to bind it to, so it is never used.
+        return {"stage": "invalid", "release_id": matches[0].get("id") if len(matches) == 1 else None, "url": "", "source_sha": None, "branch_matches": False,
+                "problems": [f"A release exists for {tag} but the tag itself does not (an untagged draft, for example)."],
+                "next_step": "The tool will not adopt it. Publish or remove it yourself on GitHub, or choose a new version."}
+    state = draft_state(repository, tag, source_sha, token, get=get)
+    branch = ref or get("")["default_branch"]
+    head = get("branches/" + quote(branch, safe=""))["commit"]["sha"]
+    return dict(state, source_sha=source_sha, branch_matches=head == source_sha)
+
+
+def verify_complete_draft(repository, tag, source_sha, release_id, token, get=None):
+    """The complete draft (Windows and macOS signed files) exists as the very release recorded earlier, still unpublished."""
+    state = draft_state(repository, tag, source_sha, token, get=get)
+    if state["stage"] == "published":
+        raise RuntimeError("The release is published, not a draft; the complete-draft check refuses to vouch for it.")
+    if state["stage"] in ("none", "invalid") or state["release_id"] != release_id:
+        if state["release_id"] is not None and state["release_id"] != release_id:
+            raise RuntimeError(f"The release for {tag} is a different release (id {state['release_id']}) from the one recorded earlier (id {release_id}); not substituting it.")
+        raise RuntimeError("The draft cannot be confirmed: " + "; ".join(state["problems"] or [state["next_step"]]))
+    if state["stage"] != "complete":
+        raise RuntimeError("The draft is not complete: macOS's signed files are not all there. " + state["next_step"])
+    if not state["url"]:
+        raise RuntimeError("The draft has no valid repository release URL.")
+    return state["url"]
 
 
 def workflow_jobs(get, run_id, attempt):
@@ -171,8 +285,19 @@ def monitor_runs(repository, token, runs, events, stop=None, get=None, interval=
                     "state": state, "conclusion": conclusion, "message": message,
                     "url": url or target.get("url", "")})
 
+    def stage(target, name, message):
+        """Draft-flow stage of a run that has a role (windows or macos): building, awaiting_signing_approval, failed or unconfirmed. Never a ready stage: the caller decides that after verifying the draft."""
+        if not target.get("role") or target.get("stage") == name:
+            return
+        target["stage"] = name
+        events.put({"kind": "stage", "stage": name, "platform": "macOS" if target["role"] == "macos" else "Windows",
+                    "workflow": target["workflow"], "message": message})
+
     while any(not target["finished"] for target in targets):
         if stop.is_set():
+            for target in targets:
+                if not target["finished"]:
+                    stage(target, "unconfirmed", f"{target['workflow']}: monitoring stopped; the result is not confirmed. The GitHub run keeps going.")
             events.put({"kind": "log", "message": "Monitoring stopped. GitHub builds continue; final results are not confirmed."})
             return False
         if clock() - started >= timeout:
@@ -180,6 +305,7 @@ def monitor_runs(repository, token, runs, events, stop=None, get=None, interval=
                 if not target["finished"]:
                     emit(target, "unknown", f"{target['workflow']}: monitoring timed out; the result is not confirmed. Check the run on GitHub; it keeps running.",
                          url=target.get("url") or (f"https://github.com/{repository}/actions/runs/{target['run_id']}" if target.get("run_id") else None))
+                    stage(target, "unconfirmed", f"{target['workflow']}: monitoring timed out; the result is not confirmed. Check the run on GitHub; it keeps running.")
             return False
         for target in targets:
             if target["finished"]:
@@ -226,6 +352,11 @@ def monitor_runs(repository, token, runs, events, stop=None, get=None, interval=
                             events.put({"kind": "log", "message": f"{target['workflow']}: step progress is unavailable; the run status is still being monitored."})
                     if jobs is not None:
                         log_job_progress(target, jobs, events, token)
+                        if state != "completed":
+                            if any(job.get("status") == "waiting" for job in jobs):
+                                stage(target, "awaiting_signing_approval", f"{target['workflow']}: waiting for the owner's approval of the release-signing environment on GitHub. The tool never approves it.")
+                            else:
+                                stage(target, "macos_running" if target.get("role") == "macos" else "building", f"{target['workflow']}: {'macOS packaging' if target.get('role') == 'macos' else 'building, checking and packaging'} is running.")
                         # A stale completed run response must not turn a job that is still active into success. Wait, and say which jobs, once.
                         unsettled = [job["name"] for job in jobs if job.get("status") != "completed"]
                         if state == "completed" and conclusion == "success" and (unsettled or (target.get("track_jobs") and not jobs)):
@@ -258,6 +389,7 @@ def monitor_runs(repository, token, runs, events, stop=None, get=None, interval=
                     target["finished"] = True
                     if conclusion != "success":
                         overall = False
+                        stage(target, "failed", f"{target['workflow']}: workflow finished with {conclusion}. Nothing was published.")
                         events.put({"kind": "error", "message": f"{target['workflow']}: workflow finished with {conclusion}. See its run for details."})
                         try:
                             for job in workflow_jobs(get, target["run_id"], result.get("run_attempt", 1)):
@@ -280,6 +412,7 @@ def monitor_runs(repository, token, runs, events, stop=None, get=None, interval=
                 if target["errors"] >= 3:
                     target["finished"] = True
                     overall = False
+                    stage(target, "unconfirmed", f"{target['workflow']}: the status could not be read; the result is not confirmed.")
                     events.put({"kind": "error", "message": f"{target['workflow']}: monitoring failed; the GitHub build result is unknown."})
         if any(not target["finished"] for target in targets):
             stop.wait(interval)

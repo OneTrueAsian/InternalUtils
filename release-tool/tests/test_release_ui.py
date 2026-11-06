@@ -33,6 +33,41 @@ class FakeProcess:
         return self.code
 
 
+class PowerShellEnvironmentTests(unittest.TestCase):
+    """VS-21 investigation: a Windows PowerShell 5.1 child that inherits a PowerShell 7 PSModulePath resolves Microsoft.PowerShell.Security from the
+    PowerShell 7 package and cannot load it (ConvertTo-SecureString then fails). The tool must not pass that variable to 5.1."""
+    PS7 = r'C:\Users\x\Documents\PowerShell\Modules;C:\Program Files\WindowsApps\Microsoft.PowerShell_7.6.9.0_x64__8wekyb3d8bbwe\Modules;C:\Windows\system32\WindowsPowerShell\v1.0\Modules'
+    WINDOWS_POWERSHELL = r'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+
+    def test_windows_powershell_does_not_inherit_a_powershell_7_module_path(self):
+        with patch.dict(release_ui.os.environ, {'PSModulePath': self.PS7, 'PATH': 'keep'}):
+            env = release_ui.powershell_environment(self.WINDOWS_POWERSHELL)
+        self.assertNotIn('PSMODULEPATH', {key.upper() for key in env})
+        self.assertEqual(env['PATH'], 'keep')
+
+    def test_powershell_7_keeps_its_own_module_path(self):
+        with patch.dict(release_ui.os.environ, {'PSModulePath': self.PS7}):
+            env = release_ui.powershell_environment(r'C:\Program Files\PowerShell\7\pwsh.exe')
+        self.assertEqual({key.upper(): value for key, value in env.items()}['PSMODULEPATH'], self.PS7)
+
+    def test_the_dispatcher_is_started_with_that_environment(self):
+        seen = {}
+        def popen(command, **kwargs):
+            seen.update(kwargs)
+            return FakeProcess('')
+        with patch.dict(release_ui.os.environ, {'PSModulePath': self.PS7}), patch.object(release_ui, 'powershell_command', return_value=[self.WINDOWS_POWERSHELL]):
+            release_ui.stream_powershell(request(), queue.Queue(), popen)
+        self.assertNotIn('PSMODULEPATH', {key.upper() for key in seen['env']})
+
+
+class ModeHelpTests(unittest.TestCase):
+    def test_the_mode_help_warns_that_local_full_release_is_not_the_vault_spend_path(self):
+        text = release_ui.FIELD_HELP['build_mode']
+        self.assertIn('Vault Spend', text)
+        self.assertIn('Local: full release publishes immediately', text)
+        self.assertIn('signed Windows files', text)
+
+
 class ReleaseTests(unittest.TestCase):
     def test_local_mode_routes_to_python_pipeline_without_github_windows_dispatch(self):
         settings = request(build_mode=release_ui.BUILD_MODES[2])
